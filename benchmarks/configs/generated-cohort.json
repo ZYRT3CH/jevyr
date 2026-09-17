@@ -1,0 +1,32 @@
+{
+  "protocol": "jevyr.live-model-qualification-config/1",
+  "providers": [
+    {
+      "id": "mind.qualification.qwen",
+      "model": "qwen3-coder:30b-32k",
+      "modelFamily": "qwen3-coder",
+      "baseUrl": "http://127.0.0.1:11434/v1/",
+      "modelDigest": "sha256:8a8cf98b3304ff023d76744c7fd59b55e70f48e0497c39feb4229e3b7425485e",
+      "investigationTransport": "native"
+    },
+    {
+      "id": "mind.qualification.gptoss",
+      "model": "gpt-oss:20b",
+      "modelFamily": "gpt-oss",
+      "baseUrl": "http://127.0.0.1:11434/v1/",
+      "modelDigest": "sha256:17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+      "investigationTransport": "structured"
+    }
+  ],
+  "seeds": [
+    "22f6bd9779ff21052b69df7a1846b5158bb8a0b828b4ea59fb1df9bf37f7ee8b",
+    "99baccb23230ffaf3a6b2664dace3ac84f95a93edcb394814fff4d789cee6414"
+  ],
+  "repeats": 1,
+  "dockerImage": "node:24-alpine",
+  "corpus": {
+    "kind": "generated",
+    "seed": "3275f26f3ac26fa1a17bbd7521480d2c4b5f7650101ac0e3960da887be43969e",
+    "taskPairs": 20
+  }
+}

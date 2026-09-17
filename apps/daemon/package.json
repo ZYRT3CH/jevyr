@@ -1,0 +1,37 @@
+{
+  "name": "@jevyr/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "jevyr-daemon": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "pnpm --filter @jevyr/runtime build && tsx watch src/main.ts serve",
+    "start": "node dist/main.js serve",
+    "mcp": "node dist/main.js mcp",
+    "test": "pnpm --filter @jevyr/runtime build && tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@jevyr/core": "workspace:*",
+    "@jevyr/growth": "workspace:*",
+    "@jevyr/memory": "workspace:*",
+    "@jevyr/protocol": "workspace:*",
+    "@jevyr/runtime": "workspace:*",
+    "fastify": "^5.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

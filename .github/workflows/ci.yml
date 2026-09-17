@@ -1,0 +1,89 @@
+name: Jevyr verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      attest:
+        description: Create optional Sigstore build provenance for the verified default-branch build
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jevyr-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: sdk/python/uv.lock
+      - name: Install exact workspace dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          uv sync --project sdk/python --locked
+          echo "$GITHUB_WORKSPACE/sdk/python/.venv/bin" >> "$GITHUB_PATH"
+      - name: Check types
+        run: pnpm typecheck
+      - name: Build all packages and Chamber
+        run: pnpm build
+      - name: Run constitutional, runtime, transport, SDK, CLI and Chamber tests
+        run: pnpm test
+      - name: Validate the adversarial corpus and measured-gate harness
+        run: |
+          node benchmarks/runner.mjs --validate-only
+          node --test benchmarks/release-gates.test.mjs benchmarks/protocol-experiments.test.mjs benchmarks/verify-browser-proof.test.mjs benchmarks/blind-memory.test.mjs
+          node apps/cli/node_modules/tsx/dist/cli.mjs --conditions=development --test benchmarks/boundary-experiments.ts
+      - name: Package the verified compiled runtime
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.attest && github.ref_name == github.event.repository.default_branch }}
+        run: tar -czf jevyr-build.tgz packages/*/dist packages/core/policy apps/cli/dist apps/daemon/dist
+      - name: Preserve the exact build for optional attestation
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.attest && github.ref_name == github.event.repository.default_branch }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: jevyr-verified-build
+          path: jevyr-build.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  attest:
+    needs: verify
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.attest && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: jevyr-verified-build
+          path: verified-build
+      - name: Attest the exact tested build with Sigstore
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: verified-build/jevyr-build.tgz
+      - name: Verify the emitted provenance independently
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JEVYR_REPOSITORY: ${{ github.repository }}
+          JEVYR_COMMIT: ${{ github.sha }}
+        run: gh attestation verify verified-build/jevyr-build.tgz --repo "$JEVYR_REPOSITORY" --source-digest "$JEVYR_COMMIT"

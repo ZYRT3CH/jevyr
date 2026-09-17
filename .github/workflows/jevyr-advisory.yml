@@ -1,0 +1,156 @@
+name: Jevyr advisory
+
+on:
+  workflow_dispatch:
+    inputs:
+      impulse:
+        description: Complete non-secret task to seal for Jevyr
+        required: true
+        type: string
+  # The workflow definition comes from the base repository. The proposed head
+  # is checked out below only as inert subject data and is never invoked by a
+  # host-side package manager, shell, local action, or build step.
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jevyr-advisory-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  judge:
+    name: Advisory Record
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Never use the proposed head or a synthetic merge ref as the executable
+      # discriminator. The subject is data; the exact base commit supplies the
+      # Jevyr runtime, policy, ignore rules, and assay authority.
+      TRUSTED_RUNTIME_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+    steps:
+      - name: Require the repository's default branch as execution authority
+        shell: bash
+        env:
+          JEVYR_AUTHORITY_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          JEVYR_AUTHORITY_TYPE: ${{ github.ref_type }}
+          JEVYR_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          JEVYR_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$JEVYR_DEFAULT_BRANCH" || "$JEVYR_AUTHORITY_REF" != "$JEVYR_DEFAULT_BRANCH" \
+            || ( "$JEVYR_EVENT_NAME" == "workflow_dispatch" && "$JEVYR_AUTHORITY_TYPE" != "branch" ) ]]; then
+            echo "Jevyr advisory runs must derive execution authority from the repository default branch." >&2
+            exit 1
+          fi
+
+      - name: Check out the trusted Jevyr runtime
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.TRUSTED_RUNTIME_SHA }}
+          path: .jevyr-runtime
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          set-safe-directory: false
+
+      - name: Check out the exact subject separately
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.TARGET_SHA }}
+          path: .jevyr-subject
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          set-safe-directory: false
+          # checkout v4 requires this acknowledgement for fork material under
+          # pull_request_target. No file from this checkout is executed on the
+          # host; it is captured as data by the verified base runtime only.
+          allow-unsafe-pr-checkout: true
+
+      - name: Run sealed advisory case
+        id: jevyr
+        uses: ./.jevyr-runtime/.github/actions/jevyr-advisory
+        with:
+          subject-sha: ${{ env.TARGET_SHA }}
+          trusted-runtime-sha: ${{ env.TRUSTED_RUNTIME_SHA }}
+          subject-directory: .jevyr-subject
+          impulse: ${{ inputs.impulse || 'Audit this exact commit. Generate competing failure mechanisms and repairs, embody discriminating tests in a disposable overlay, then judge only from observed evidence.' }}
+
+      - name: Preserve the signed proof archive
+        # Never publish a partial bundle after replay, provenance, source
+        # immutability, export-integrity, or private-material checks fail.
+        if: ${{ !cancelled() && steps.jevyr.outcome == 'success' }}
+        id: publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: jevyr-advisory-${{ env.TARGET_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.jevyr.outputs.bundle-archive-path }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Download the exact published object for verification
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.publication.outputs.artifact-id }}
+          path: ${{ runner.temp }}/jevyr-published-${{ github.run_id }}-${{ github.run_attempt }}
+          merge-multiple: true
+
+      - name: Verify the published archive after upload
+        shell: bash
+        env:
+          JEVYR_DOWNLOADED_ROOT: ${{ runner.temp }}/jevyr-published-${{ github.run_id }}-${{ github.run_attempt }}
+          JEVYR_LOCAL_ARCHIVE: ${{ steps.jevyr.outputs.bundle-archive-path }}
+          JEVYR_EXPECTED_ARCHIVE_DIGEST: ${{ steps.jevyr.outputs.bundle-archive-digest }}
+          JEVYR_EXPECTED_KEY_ID: ${{ steps.jevyr.outputs.key-id }}
+          JEVYR_EXPECTED_RUNTIME_SHA: ${{ steps.jevyr.outputs.runtime-sha }}
+          JEVYR_EXPECTED_SUBJECT_SHA: ${{ steps.jevyr.outputs.source-sha }}
+          JEVYR_EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          JEVYR_GITHUB_ARTIFACT_DIGEST: ${{ steps.publication.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if ! [[ "$JEVYR_EXPECTED_ARCHIVE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ \
+            && "$JEVYR_EXPECTED_KEY_ID" =~ ^sha256:[a-f0-9]{64}$ \
+            && "$JEVYR_GITHUB_ARTIFACT_DIGEST" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "Published Jevyr identity outputs are not canonical SHA-256 values." >&2
+            exit 1
+          fi
+          JEVYR_DOWNLOADED_ROOT=$(realpath -e -- "$JEVYR_DOWNLOADED_ROOT")
+          JEVYR_ARCHIVE_NAME=$(basename -- "$JEVYR_LOCAL_ARCHIVE")
+          JEVYR_DOWNLOADED_ARCHIVE="$JEVYR_DOWNLOADED_ROOT/$JEVYR_ARCHIVE_NAME"
+          if [[ ! -f "$JEVYR_DOWNLOADED_ARCHIVE" || -L "$JEVYR_DOWNLOADED_ARCHIVE" ]] \
+            || [[ $(find "$JEVYR_DOWNLOADED_ROOT" -mindepth 1 -type f -print | wc -l) -ne 1 ]] \
+            || [[ -n $(find "$JEVYR_DOWNLOADED_ROOT" -mindepth 1 ! -type f -print -quit) ]]; then
+            echo "The downloaded artifact does not contain exactly one ordinary archive." >&2
+            exit 1
+          fi
+          JEVYR_OBSERVED_ARCHIVE_DIGEST="sha256:$(sha256sum < "$JEVYR_DOWNLOADED_ARCHIVE" | cut -d' ' -f1)"
+          test "$JEVYR_EXPECTED_ARCHIVE_DIGEST" = "$JEVYR_OBSERVED_ARCHIVE_DIGEST"
+          JEVYR_VERIFY_STATE=$(mktemp -d \
+            "$RUNNER_TEMP/jevyr-published-check-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
+          mkdir -m 0700 -- "$JEVYR_VERIFY_STATE/home" "$JEVYR_VERIFY_STATE/tmp" "$JEVYR_VERIFY_STATE/bundle"
+          JEVYR_VERIFY_ROOT="$JEVYR_VERIFY_STATE/bundle"
+          tar --extract --file "$JEVYR_DOWNLOADED_ARCHIVE" --directory "$JEVYR_VERIFY_ROOT" \
+            --no-same-owner --no-same-permissions
+          env -i PATH="$PATH" HOME="$JEVYR_VERIFY_STATE/home" TMPDIR="$JEVYR_VERIFY_STATE/tmp" LANG=C.UTF-8 \
+            node "$GITHUB_WORKSPACE/.jevyr-runtime/apps/cli/dist/main.js" \
+              verify-bundle "$JEVYR_VERIFY_ROOT" \
+              --trusted-key-id "$JEVYR_EXPECTED_KEY_ID" \
+              --expected-runtime-sha "$JEVYR_EXPECTED_RUNTIME_SHA" \
+              --expected-subject-sha "$JEVYR_EXPECTED_SUBJECT_SHA" \
+              --expected-workflow-sha "$JEVYR_EXPECTED_WORKFLOW_SHA" \
+              --json > "$RUNNER_TEMP/jevyr-published-verification.json"
+          printf '\nPublished GitHub artifact digest: `%s`  \nJevyr archive digest: `%s`\n' \
+            "$JEVYR_GITHUB_ARTIFACT_DIGEST" "$JEVYR_EXPECTED_ARCHIVE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+# Deliberately absent: pull-request comments, branch protection, merge actions,
+# pushes, mutable credentials, deployment, or automatic patch application.

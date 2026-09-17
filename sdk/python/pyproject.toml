@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jevyr-sdk"
+version = "0.1.0"
+description = "Python client for sealed Jevyr cases and resumable live traces"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Jevyr contributors" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = ["cryptography>=43"]
+
+[project.scripts]
+jevyr-experiment = "jevyr.experiment:main"
+
+[dependency-groups]
+dev = []
+
+[tool.setuptools.package-data]
+jevyr = ["py.typed"]

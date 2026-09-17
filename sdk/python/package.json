@@ -1,0 +1,10 @@
+{
+  "name": "@jevyr/python-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "python -m compileall -q jevyr",
+    "test": "python -m unittest discover -s tests -v",
+    "typecheck": "python -m compileall -q jevyr tests"
+  }
+}

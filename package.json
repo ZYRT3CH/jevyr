@@ -1,0 +1,31 @@
+{
+  "name": "jevyr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev": "pnpm --parallel --filter @jevyr/daemon --filter @jevyr/chamber dev",
+    "dev:chamber": "pnpm --filter @jevyr/chamber dev",
+    "dev:daemon": "pnpm --filter @jevyr/daemon dev",
+    "test": "node --test .github/actions/jevyr-advisory/filesystem-manifest.test.mjs .github/actions/jevyr-advisory/workflow-contract.test.mjs && node --test benchmarks/*.test.mjs && pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "format": "pnpm -r --if-present format",
+    "jevyr": "pnpm --filter @jevyr/cli start",
+    "judge": "pnpm --filter @jevyr/cli start",
+    "proof:lifecycle": "pnpm --filter @jevyr/daemon exec tsx --conditions=development ../../scripts/lifecycle-proof.ts",
+    "proof:gates": "node benchmarks/release-gates.mjs",
+    "proof:memory": "node benchmarks/blind-memory.mjs",
+    "proof:genome": "pnpm --filter @jevyr/daemon exec tsx ../../scripts/paired-genome-runner.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { verifyLocalProof } from "../apps/cli/dist/local-proof.js";
+const root = resolve(process.argv[2]);
+const report = JSON.parse(await readFile(join(root, "report.json"), "utf8"));
+const verification = await verifyLocalProof(join(root, "proof"));
+const evidence = { protocol: "jevyr.metabolic-proof-verification/1", observedAt: new Date().toISOString(), reportCaseId: report.caseId, verification };
+await writeFile(join(root, "independent-verification.json"), JSON.stringify(evidence, null, 2));
+console.log(JSON.stringify({ caseId: report.caseId, valid: verification.valid, problems: verification.problems }));
+assert.equal(verification.valid, true);

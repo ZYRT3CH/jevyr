@@ -1,0 +1,43 @@
+{
+  "name": "@jevyr/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Command-line airlock, live trace, replay, and advisory benchmark interface for Jevyr.",
+  "bin": {
+    "jevyr": "./dist/main.js",
+    "jevyr": "./dist/main.js",
+    "judge": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "tsx --conditions=development src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@jevyr/core": "workspace:*",
+    "@jevyr/daemon": "workspace:*",
+    "@jevyr/growth": "workspace:*",
+    "@jevyr/protocol": "workspace:*",
+    "@jevyr/runtime": "workspace:*",
+    "@jevyr/sdk": "workspace:*",
+    "ink": "^6.3.1",
+    "react": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "19.2.14",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

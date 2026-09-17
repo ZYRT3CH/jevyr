@@ -1,0 +1,1432 @@
+name: Jevyr advisory case
+description: Seal an exact checked-out commit into an isolated Jevyr runtime and export public, advisory proof material.
+inputs:
+  impulse:
+    description: The complete non-secret one-shot impulse. It is sealed, exported in sealed.json, and cannot be continued.
+    required: true
+  subject-sha:
+    description: Full Git commit SHA that must equal HEAD.
+    required: true
+  trusted-runtime-sha:
+    description: Full Git commit SHA that must equal the checkout containing this action and Bone policy.
+    required: true
+  subject-directory:
+    description: Exact checked-out subject repository, separate from this trusted action runtime.
+    required: true
+  data-directory:
+    description: Optional new private-state directory below RUNNER_TEMP. Defaults to a unique runner-temporary path and is never uploaded.
+    required: false
+    default: ""
+  public-directory:
+    description: Optional new public-export directory below RUNNER_TEMP. Defaults to a unique runner-temporary path.
+    required: false
+    default: ""
+  forge-plan:
+    description: Optional relative pre-sealed Forge plan path contained in the verified trusted-runtime checkout.
+    required: false
+    default: ""
+  assay-frontier:
+    description: Optional relative pre-sealed jevyr.assay-frontier/1 path contained in the verified trusted-runtime checkout.
+    required: false
+    default: ""
+outputs:
+  case-id:
+    description: Sealed Jevyr case identifier.
+    value: ${{ steps.run.outputs.case-id }}
+  record-path:
+    description: Path to the canonical Record payload.
+    value: ${{ steps.run.outputs.record-path }}
+  record-envelope-path:
+    description: Path to the signed DSSE Record envelope.
+    value: ${{ steps.run.outputs.record-envelope-path }}
+  terminal-path:
+    description: Path to the canonical signed terminal-closure payload.
+    value: ${{ steps.run.outputs.terminal-path }}
+  terminal-envelope-path:
+    description: Path to the DSSE terminal-closure envelope.
+    value: ${{ steps.run.outputs.terminal-envelope-path }}
+  replay-path:
+    description: Path to the independent persisted-evidence replay report.
+    value: ${{ steps.run.outputs.replay-path }}
+  public-directory:
+    description: Directory containing only exportable proof material.
+    value: ${{ steps.run.outputs.public-directory }}
+  bundle-archive-path:
+    description: Path to the single verified tar archive intended for publication.
+    value: ${{ steps.run.outputs.bundle-archive-path }}
+  bundle-archive-digest:
+    description: SHA-256 digest of the exact tar archive intended for publication.
+    value: ${{ steps.run.outputs.bundle-archive-digest }}
+  source-sha:
+    description: Verified source commit.
+    value: ${{ steps.run.outputs.source-sha }}
+  runtime-sha:
+    description: Verified Jevyr runtime commit.
+    value: ${{ steps.run.outputs.runtime-sha }}
+  key-id:
+    description: Verified DSSE Ed25519 key ID; pin this value out of band for offline authenticity.
+    value: ${{ steps.run.outputs.key-id }}
+runs:
+  using: composite
+  steps:
+    - name: Set up the pinned Jevyr Node runtime
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 24.16.0
+
+    - name: Verify exact immutable subject
+      shell: bash
+      env:
+        JEVYR_EXPECTED_SHA: ${{ inputs.subject-sha }}
+        JEVYR_SUBJECT_INPUT: ${{ inputs.subject-directory }}
+      run: |
+        set -euo pipefail
+        umask 077
+        if ! grep -Eq '^[a-f0-9]{40}([a-f0-9]{24})?$' <<<"$JEVYR_EXPECTED_SHA"; then
+          echo "The subject SHA is not a full canonical Git object id." >&2
+          exit 1
+        fi
+        JEVYR_WORKSPACE_ROOT=$(realpath -e -- "$GITHUB_WORKSPACE")
+        case "$JEVYR_SUBJECT_INPUT" in
+          /*) JEVYR_SUBJECT_ROOT="$JEVYR_SUBJECT_INPUT" ;;
+          *) JEVYR_SUBJECT_ROOT="$JEVYR_WORKSPACE_ROOT/$JEVYR_SUBJECT_INPUT" ;;
+        esac
+        JEVYR_SUBJECT_ROOT=$(realpath -e -- "$JEVYR_SUBJECT_ROOT")
+        case "$JEVYR_SUBJECT_ROOT/" in
+          "$JEVYR_WORKSPACE_ROOT/"*) ;;
+          *) echo "The subject checkout must remain inside GITHUB_WORKSPACE." >&2; exit 1 ;;
+        esac
+        if [[ ! -d "$JEVYR_SUBJECT_ROOT/.git" || -L "$JEVYR_SUBJECT_ROOT/.git" ]]; then
+          echo "The subject must be a standalone checkout with a real .git directory." >&2
+          exit 1
+        fi
+        git_subject() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_SUBJECT_ROOT" "$@"
+        }
+        JEVYR_REPORTED_SUBJECT_ROOT=$(git_subject rev-parse --show-toplevel)
+        JEVYR_REPORTED_SUBJECT_ROOT=$(realpath -e -- "$JEVYR_REPORTED_SUBJECT_ROOT")
+        test "$JEVYR_SUBJECT_ROOT" = "$JEVYR_REPORTED_SUBJECT_ROOT"
+        JEVYR_OBSERVED_SUBJECT_SHA=$(git_subject rev-parse --verify 'HEAD^{commit}')
+        test "$JEVYR_EXPECTED_SHA" = "$JEVYR_OBSERVED_SUBJECT_SHA"
+        JEVYR_SUBJECT_STATUS=$(git_subject status --porcelain=v2 --untracked-files=all --ignore-submodules=none)
+        test -z "$JEVYR_SUBJECT_STATUS"
+        git_subject ls-files --others --ignored --exclude-standard -z > "$RUNNER_TEMP/jevyr-source-ignored-before"
+        test ! -s "$RUNNER_TEMP/jevyr-source-ignored-before"
+        {
+          git_subject rev-parse --verify 'HEAD^{commit}'
+          git_subject rev-parse --verify 'HEAD^{tree}'
+          git_subject ls-files --stage -z
+          git_subject diff --no-ext-diff --no-textconv --binary HEAD --
+          git_subject ls-files --others --exclude-standard -z
+        } | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-source-before.sha256"
+        git_subject ls-tree -r --full-tree -z "$JEVYR_EXPECTED_SHA" \
+          > "$RUNNER_TEMP/jevyr-subject-tree.entries"
+        git_subject rev-parse --verify 'HEAD^{tree}' > "$RUNNER_TEMP/jevyr-source-tree"
+        printf '%s\n' "$JEVYR_SUBJECT_ROOT" > "$RUNNER_TEMP/jevyr-subject-root"
+
+    - name: Verify exact trusted Jevyr runtime
+      shell: bash
+      env:
+        JEVYR_ACTION_ROOT_INPUT: ${{ github.action_path }}/../../..
+        JEVYR_EXPECTED_RUNTIME_SHA: ${{ inputs.trusted-runtime-sha }}
+      run: |
+        set -euo pipefail
+        umask 077
+        if ! grep -Eq '^[a-f0-9]{40}([a-f0-9]{24})?$' <<<"$JEVYR_EXPECTED_RUNTIME_SHA"; then
+          echo "The trusted runtime SHA is not a full canonical Git object id." >&2
+          exit 1
+        fi
+        JEVYR_WORKSPACE_ROOT=$(realpath -e -- "$GITHUB_WORKSPACE")
+        JEVYR_ACTION_ROOT=$(realpath -e -- "$JEVYR_ACTION_ROOT_INPUT")
+        case "$JEVYR_ACTION_ROOT/" in
+          "$JEVYR_WORKSPACE_ROOT/"*) ;;
+          *) echo "The trusted runtime checkout must remain inside GITHUB_WORKSPACE." >&2; exit 1 ;;
+        esac
+        if [[ ! -d "$JEVYR_ACTION_ROOT/.git" || -L "$JEVYR_ACTION_ROOT/.git" ]]; then
+          echo "The trusted runtime must be a standalone checkout with a real .git directory." >&2
+          exit 1
+        fi
+        git_runtime() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_ACTION_ROOT" "$@"
+        }
+        JEVYR_REPORTED_RUNTIME_ROOT=$(git_runtime rev-parse --show-toplevel)
+        JEVYR_REPORTED_RUNTIME_ROOT=$(realpath -e -- "$JEVYR_REPORTED_RUNTIME_ROOT")
+        test "$JEVYR_ACTION_ROOT" = "$JEVYR_REPORTED_RUNTIME_ROOT"
+        JEVYR_OBSERVED_RUNTIME_SHA=$(git_runtime rev-parse --verify 'HEAD^{commit}')
+        test "$JEVYR_EXPECTED_RUNTIME_SHA" = "$JEVYR_OBSERVED_RUNTIME_SHA"
+        JEVYR_RUNTIME_STATUS=$(git_runtime status --porcelain=v2 --untracked-files=all --ignore-submodules=none)
+        test -z "$JEVYR_RUNTIME_STATUS"
+        git_runtime ls-files --others --ignored --exclude-standard -z > "$RUNNER_TEMP/jevyr-runtime-ignored-before"
+        test ! -s "$RUNNER_TEMP/jevyr-runtime-ignored-before"
+        if [[ -e "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+          if [[ ! -d "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+            echo "The trusted .jevyr authority root must be a real directory." >&2
+            exit 1
+          fi
+          JEVYR_RUNTIME_CONTROL_LINK=$(find "$JEVYR_ACTION_ROOT/.jevyr" -type l -print -quit)
+          if [[ -n "$JEVYR_RUNTIME_CONTROL_LINK" ]]; then
+            echo "The trusted .jevyr authority namespace must not contain symbolic links." >&2
+            exit 1
+          fi
+        fi
+        JEVYR_SUBJECT_ROOT=$(cat "$RUNNER_TEMP/jevyr-subject-root")
+        if [[ "$JEVYR_SUBJECT_ROOT" == "$JEVYR_ACTION_ROOT" \
+          || "$JEVYR_SUBJECT_ROOT" == "$JEVYR_ACTION_ROOT/"* \
+          || "$JEVYR_ACTION_ROOT" == "$JEVYR_SUBJECT_ROOT/"* ]]; then
+          echo "The subject and trusted runtime checkouts must be disjoint." >&2
+          exit 1
+        fi
+        JEVYR_RUNTIME_IGNORE="$JEVYR_ACTION_ROOT/.jevyrignore"
+        JEVYR_SUBJECT_IGNORE="$JEVYR_SUBJECT_ROOT/.jevyrignore"
+        if [[ -L "$JEVYR_RUNTIME_IGNORE" || -L "$JEVYR_SUBJECT_IGNORE" ]]; then
+          echo ".jevyrignore must not be a symbolic link in either checkout." >&2
+          exit 1
+        fi
+        if [[ -f "$JEVYR_RUNTIME_IGNORE" ]]; then
+          if [[ ! -f "$JEVYR_SUBJECT_IGNORE" ]] \
+            || ! cmp -s -- "$JEVYR_RUNTIME_IGNORE" "$JEVYR_SUBJECT_IGNORE"; then
+            echo "The proposed commit cannot change the capture ignore policy for its own run." >&2
+            exit 1
+          fi
+        elif [[ -e "$JEVYR_RUNTIME_IGNORE" ]]; then
+          echo "The trusted .jevyrignore path is not a regular file." >&2
+          exit 1
+        elif [[ -e "$JEVYR_SUBJECT_IGNORE" ]]; then
+          echo "The proposed commit cannot introduce a capture ignore policy for its own run." >&2
+          exit 1
+        fi
+        if [[ -f "$JEVYR_RUNTIME_IGNORE" ]]; then
+          sha256sum "$JEVYR_RUNTIME_IGNORE" | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-ignore-policy.sha256"
+        else
+          printf 'absent\n' > "$RUNNER_TEMP/jevyr-ignore-policy.sha256"
+        fi
+        if [[ ! -f "$JEVYR_ACTION_ROOT/pnpm-lock.yaml" || -L "$JEVYR_ACTION_ROOT/pnpm-lock.yaml" ]]; then
+          echo "The trusted runtime lockfile must be one regular, non-symlink file." >&2
+          exit 1
+        fi
+        git_runtime rev-parse --verify 'HEAD^{tree}' > "$RUNNER_TEMP/jevyr-runtime-tree"
+        sha256sum "$JEVYR_ACTION_ROOT/pnpm-lock.yaml" | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-runtime-lock.sha256"
+        {
+          git_runtime rev-parse --verify 'HEAD^{commit}'
+          git_runtime rev-parse --verify 'HEAD^{tree}'
+          git_runtime ls-files --stage -z
+          git_runtime diff --no-ext-diff --no-textconv --binary HEAD --
+        } | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-runtime-before.sha256"
+        JEVYR_TREE_GUARD_SOURCE="$JEVYR_ACTION_ROOT/.github/actions/jevyr-advisory/filesystem-manifest.mjs"
+        if [[ ! -f "$JEVYR_TREE_GUARD_SOURCE" || -L "$JEVYR_TREE_GUARD_SOURCE" ]] \
+          || ! git_runtime ls-files --error-unmatch -- ".github/actions/jevyr-advisory/filesystem-manifest.mjs" >/dev/null; then
+          echo "The filesystem-byte verifier must be one regular file tracked by the trusted runtime commit." >&2
+          exit 1
+        fi
+        git_runtime ls-tree -r --full-tree -z "$JEVYR_EXPECTED_RUNTIME_SHA" \
+          > "$RUNNER_TEMP/jevyr-runtime-tree.entries"
+        install -m 0400 -- "$JEVYR_TREE_GUARD_SOURCE" "$RUNNER_TEMP/jevyr-filesystem-manifest.mjs"
+        node "$RUNNER_TEMP/jevyr-filesystem-manifest.mjs" paths-from-tree \
+          "$RUNNER_TEMP/jevyr-runtime-tree.entries" "$RUNNER_TEMP/jevyr-runtime-tracked.paths"
+        node "$RUNNER_TEMP/jevyr-filesystem-manifest.mjs" paths-from-tree \
+          "$RUNNER_TEMP/jevyr-subject-tree.entries" "$RUNNER_TEMP/jevyr-subject-tracked.paths"
+        node "$RUNNER_TEMP/jevyr-filesystem-manifest.mjs" capture \
+          "$JEVYR_ACTION_ROOT" "$RUNNER_TEMP/jevyr-runtime-tracked.paths" \
+          "$RUNNER_TEMP/jevyr-runtime-filesystem.json" tracked
+        node "$RUNNER_TEMP/jevyr-filesystem-manifest.mjs" capture \
+          "$JEVYR_SUBJECT_ROOT" "$RUNNER_TEMP/jevyr-subject-tracked.paths" \
+          "$RUNNER_TEMP/jevyr-subject-filesystem.json" complete-worktree
+        printf '%s\n' "$JEVYR_ACTION_ROOT" > "$RUNNER_TEMP/jevyr-action-root"
+        printf '%s\n' "$JEVYR_EXPECTED_RUNTIME_SHA" > "$RUNNER_TEMP/jevyr-runtime-sha"
+
+    - name: Build pinned Jevyr action runtime
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        JEVYR_ACTION_ROOT=$(cat "$RUNNER_TEMP/jevyr-action-root")
+        JEVYR_SUBJECT_ROOT=$(cat "$RUNNER_TEMP/jevyr-subject-root")
+        JEVYR_TREE_GUARD="$RUNNER_TEMP/jevyr-filesystem-manifest.mjs"
+        JEVYR_RUNTIME_FILESYSTEM="$RUNNER_TEMP/jevyr-runtime-filesystem.json"
+        JEVYR_SUBJECT_FILESYSTEM="$RUNNER_TEMP/jevyr-subject-filesystem.json"
+        JEVYR_TREE_GUARD_IDENTITY=$(sha256sum < "$JEVYR_TREE_GUARD")
+        JEVYR_RUNTIME_FILESYSTEM_IDENTITY=$(sha256sum < "$JEVYR_RUNTIME_FILESYSTEM")
+        JEVYR_SUBJECT_FILESYSTEM_IDENTITY=$(sha256sum < "$JEVYR_SUBJECT_FILESYSTEM")
+        JEVYR_BUILD_HOME=$(mktemp -d "$RUNNER_TEMP/jevyr-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
+        mkdir -m 0700 -- "$JEVYR_BUILD_HOME/tmp" "$JEVYR_BUILD_HOME/cache" "$JEVYR_BUILD_HOME/corepack"
+        build_environment=(
+          env -i
+          "PATH=$PATH"
+          "HOME=$JEVYR_BUILD_HOME"
+          "TMPDIR=$JEVYR_BUILD_HOME/tmp"
+          "XDG_CACHE_HOME=$JEVYR_BUILD_HOME/cache"
+          "COREPACK_HOME=$JEVYR_BUILD_HOME/corepack"
+          "LANG=C.UTF-8"
+          "CI=true"
+          "NEXT_TELEMETRY_DISABLED=1"
+        )
+        (
+          cd "$JEVYR_ACTION_ROOT"
+          JEVYR_NODE_VERSION=$("${build_environment[@]}" node --version)
+          test "$JEVYR_NODE_VERSION" = "v24.16.0"
+          JEVYR_PNPM_VERSION=$("${build_environment[@]}" corepack pnpm --version)
+          test "$JEVYR_PNPM_VERSION" = "10.17.1"
+          "${build_environment[@]}" corepack pnpm install --frozen-lockfile
+          "${build_environment[@]}" corepack pnpm build
+        )
+        test "$JEVYR_TREE_GUARD_IDENTITY" = "$(sha256sum < "$JEVYR_TREE_GUARD")"
+        test "$JEVYR_RUNTIME_FILESYSTEM_IDENTITY" = "$(sha256sum < "$JEVYR_RUNTIME_FILESYSTEM")"
+        test "$JEVYR_SUBJECT_FILESYSTEM_IDENTITY" = "$(sha256sum < "$JEVYR_SUBJECT_FILESYSTEM")"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_SUBJECT_ROOT" "$JEVYR_SUBJECT_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify-subtree "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_FILESYSTEM" .jevyr
+        git_runtime() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_ACTION_ROOT" "$@"
+        }
+        JEVYR_RECORDED_RUNTIME_SHA=$(<"$RUNNER_TEMP/jevyr-runtime-sha")
+        JEVYR_OBSERVED_RUNTIME_SHA=$(git_runtime rev-parse --verify 'HEAD^{commit}')
+        test "$JEVYR_RECORDED_RUNTIME_SHA" = "$JEVYR_OBSERVED_RUNTIME_SHA"
+        JEVYR_RUNTIME_STATUS=$(git_runtime status --porcelain=v2 --untracked-files=no --ignore-submodules=none)
+        test -z "$JEVYR_RUNTIME_STATUS"
+        JEVYR_RUNTIME_CONTROL_STATUS=$(git_runtime status --porcelain=v2 --untracked-files=all --ignore-submodules=none -- .jevyr)
+        if [[ -n "$JEVYR_RUNTIME_CONTROL_STATUS" ]]; then
+          echo "The build created or changed authority-bearing files in the trusted .jevyr namespace." >&2
+          exit 1
+        fi
+        JEVYR_RUNTIME_IGNORED_CONTROLS=$(git_runtime ls-files --others --ignored --exclude-standard -- .jevyr)
+        if [[ -n "$JEVYR_RUNTIME_IGNORED_CONTROLS" ]]; then
+          echo "The build created ignored authority-bearing files in the trusted .jevyr namespace." >&2
+          exit 1
+        fi
+        if [[ -e "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+          if [[ ! -d "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+            echo "The build replaced the trusted .jevyr authority root with a non-directory or link." >&2
+            exit 1
+          fi
+          JEVYR_RUNTIME_CONTROL_LINK=$(find "$JEVYR_ACTION_ROOT/.jevyr" -type l -print -quit)
+          if [[ -n "$JEVYR_RUNTIME_CONTROL_LINK" ]]; then
+            echo "The build left a symbolic link in the trusted .jevyr authority namespace." >&2
+            exit 1
+          fi
+        fi
+        {
+          git_runtime rev-parse --verify 'HEAD^{commit}'
+          git_runtime rev-parse --verify 'HEAD^{tree}'
+          git_runtime ls-files --stage -z
+          git_runtime diff --no-ext-diff --no-textconv --binary HEAD --
+        } | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-runtime-after.sha256"
+        cmp "$RUNNER_TEMP/jevyr-runtime-before.sha256" "$RUNNER_TEMP/jevyr-runtime-after.sha256"
+        JEVYR_IGNORE_IDENTITY=$(cat "$RUNNER_TEMP/jevyr-ignore-policy.sha256")
+        if [[ "$JEVYR_IGNORE_IDENTITY" == "absent" ]]; then
+          if [[ -e "$JEVYR_ACTION_ROOT/.jevyrignore" || -L "$JEVYR_ACTION_ROOT/.jevyrignore" ]]; then
+            echo "The trusted runtime ignore policy changed during the build." >&2
+            exit 1
+          fi
+        else
+          if [[ ! -f "$JEVYR_ACTION_ROOT/.jevyrignore" || -L "$JEVYR_ACTION_ROOT/.jevyrignore" ]]; then
+            echo "The trusted runtime ignore policy is no longer a regular, non-symlink file." >&2
+            exit 1
+          fi
+          JEVYR_OBSERVED_IGNORE_IDENTITY=$(sha256sum "$JEVYR_ACTION_ROOT/.jevyrignore" | cut -d' ' -f1)
+          test "$JEVYR_IGNORE_IDENTITY" = "$JEVYR_OBSERVED_IGNORE_IDENTITY"
+        fi
+        node "$JEVYR_TREE_GUARD" capture-all \
+          "$JEVYR_ACTION_ROOT" "$RUNNER_TEMP/jevyr-runtime-execution-filesystem.json"
+        node "$JEVYR_TREE_GUARD" verify \
+          "$JEVYR_ACTION_ROOT" "$RUNNER_TEMP/jevyr-runtime-execution-filesystem.json"
+
+    - name: Cast, observe, and export public proofs
+      id: run
+      shell: bash
+      env:
+        JEVYR_DATA_INPUT: ${{ inputs.data-directory }}
+        JEVYR_PUBLIC_INPUT: ${{ inputs.public-directory }}
+        JEVYR_FORGE_PLAN_INPUT: ${{ inputs.forge-plan }}
+        JEVYR_ASSAY_FRONTIER_INPUT: ${{ inputs.assay-frontier }}
+        JEVYR_EXPECTED_SHA: ${{ inputs.subject-sha }}
+        JEVYR_IMPULSE: ${{ inputs.impulse }}
+        JEVYR_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        JEVYR_RUNTIME_REPOSITORY: ${{ github.repository }}
+        JEVYR_SUBJECT_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        JEVYR_EVENT_NAME: ${{ github.event_name }}
+        JEVYR_RUN_ID: ${{ github.run_id }}
+        JEVYR_RUN_ATTEMPT: ${{ github.run_attempt }}
+        JEVYR_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || '' }}
+      run: |
+        set -euo pipefail
+        set -C
+        umask 077
+        JEVYR_ACTION_ROOT=$(cat "$RUNNER_TEMP/jevyr-action-root")
+        JEVYR_RUNTIME_SHA=$(cat "$RUNNER_TEMP/jevyr-runtime-sha")
+        JEVYR_RUNTIME_TREE=$(cat "$RUNNER_TEMP/jevyr-runtime-tree")
+        JEVYR_RUNTIME_LOCK_DIGEST=$(cat "$RUNNER_TEMP/jevyr-runtime-lock.sha256")
+        JEVYR_SUBJECT_ROOT=$(cat "$RUNNER_TEMP/jevyr-subject-root")
+        JEVYR_SUBJECT_TREE=$(cat "$RUNNER_TEMP/jevyr-source-tree")
+        JEVYR_TEMP_ROOT=$(realpath -e -- "$RUNNER_TEMP")
+        JEVYR_TREE_GUARD="$RUNNER_TEMP/jevyr-filesystem-manifest.mjs"
+        JEVYR_RUNTIME_FILESYSTEM="$RUNNER_TEMP/jevyr-runtime-filesystem.json"
+        JEVYR_RUNTIME_EXECUTION_FILESYSTEM="$RUNNER_TEMP/jevyr-runtime-execution-filesystem.json"
+        JEVYR_SUBJECT_FILESYSTEM="$RUNNER_TEMP/jevyr-subject-filesystem.json"
+        git_runtime() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_ACTION_ROOT" "$@"
+        }
+        verify_runtime_control_namespace() {
+          local control_status ignored_controls
+          node "$JEVYR_TREE_GUARD" verify-subtree \
+            "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_FILESYSTEM" .jevyr
+          if [[ -e "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+            if [[ ! -d "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+              echo "The trusted .jevyr authority root is not a real directory." >&2
+              return 1
+            fi
+            local control_link
+            control_link=$(find "$JEVYR_ACTION_ROOT/.jevyr" -type l -print -quit)
+            if [[ -n "$control_link" ]]; then
+              echo "The trusted .jevyr authority namespace contains a symbolic link." >&2
+              return 1
+            fi
+          fi
+          control_status=$(git_runtime status --porcelain=v2 --untracked-files=all --ignore-submodules=none -- .jevyr)
+          if [[ -n "$control_status" ]]; then
+            echo "The trusted .jevyr authority namespace differs from the exact runtime commit." >&2
+            return 1
+          fi
+          ignored_controls=$(git_runtime ls-files --others --ignored --exclude-standard -- .jevyr)
+          if [[ -n "$ignored_controls" ]]; then
+            echo "The trusted .jevyr authority namespace contains ignored non-commit material." >&2
+            return 1
+          fi
+        }
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_EXECUTION_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_SUBJECT_ROOT" "$JEVYR_SUBJECT_FILESYSTEM"
+        verify_runtime_control_namespace
+        new_temp_directory() {
+          local input="$1"
+          local prefix="$2"
+          local candidate parent name resolved_parent created
+          if test -z "$input"; then
+            if ! created=$(mktemp -d "$JEVYR_TEMP_ROOT/${prefix}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX"); then
+              echo "Jevyr could not allocate a fresh runner-temporary directory." >&2
+              return 1
+            fi
+            if ! chmod 0700 "$created"; then
+              echo "Jevyr could not protect its fresh runner-temporary directory." >&2
+              return 1
+            fi
+            realpath -e -- "$created"
+            return
+          fi
+          case "$input" in
+            /*) candidate="$input" ;;
+            *) candidate="$JEVYR_TEMP_ROOT/$input" ;;
+          esac
+          name=$(basename -- "$candidate")
+          if ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$name" == "." || "$name" == ".." ]]; then
+            echo "Jevyr output directory names must be portable and single-line." >&2
+            return 1
+          fi
+          resolved_parent=$(realpath -e -- "$(dirname -- "$candidate")")
+          case "$resolved_parent/" in
+            "$JEVYR_TEMP_ROOT/"*) ;;
+            *) echo "Jevyr output directories must remain below RUNNER_TEMP." >&2; return 1 ;;
+          esac
+          candidate="$resolved_parent/$name"
+          if [[ -e "$candidate" || -L "$candidate" ]]; then
+            echo "Jevyr output directories must be new." >&2
+            return 1
+          fi
+          if ! mkdir -m 0700 -- "$candidate"; then
+            echo "Jevyr could not create the requested fresh output directory." >&2
+            return 1
+          fi
+          realpath -e -- "$candidate"
+        }
+        JEVYR_STATE_DIR=$(new_temp_directory "$JEVYR_DATA_INPUT" "jevyr-private")
+        JEVYR_PUBLIC_DIR=$(new_temp_directory "$JEVYR_PUBLIC_INPUT" "jevyr-public")
+        if [[ "$JEVYR_STATE_DIR" == "$JEVYR_PUBLIC_DIR" \
+          || "$JEVYR_STATE_DIR" == "$JEVYR_PUBLIC_DIR/"* \
+          || "$JEVYR_PUBLIC_DIR" == "$JEVYR_STATE_DIR/"* ]]; then
+          echo "Jevyr private state and public proof directories must be disjoint." >&2
+          exit 1
+        fi
+        for protected_root in "$JEVYR_ACTION_ROOT" "$JEVYR_SUBJECT_ROOT"; do
+          if [[ "$JEVYR_STATE_DIR" == "$protected_root" \
+            || "$JEVYR_STATE_DIR" == "$protected_root/"* \
+            || "$protected_root" == "$JEVYR_STATE_DIR/"* \
+            || "$JEVYR_PUBLIC_DIR" == "$protected_root" \
+            || "$JEVYR_PUBLIC_DIR" == "$protected_root/"* \
+            || "$protected_root" == "$JEVYR_PUBLIC_DIR/"* ]]; then
+            echo "Jevyr output directories must not overlap either checkout." >&2
+            exit 1
+          fi
+        done
+        if test -n "$JEVYR_FORGE_PLAN_INPUT" && test -n "$JEVYR_ASSAY_FRONTIER_INPUT"; then
+          echo "Configure assay-frontier or the legacy forge-plan, never both." >&2
+          exit 1
+        fi
+        trusted_configuration() {
+          local input="$1"
+          local label="$2"
+          local candidate relative resolved
+          case "$input" in
+            /*) echo "$label must be a relative path in the trusted runtime checkout." >&2; return 1 ;;
+            *) candidate="$JEVYR_ACTION_ROOT/$input" ;;
+          esac
+          if [[ "$input" == *$'\n'* || "$input" == *$'\r'* || -L "$candidate" ]]; then
+            echo "$label must name one regular, single-line trusted-runtime file." >&2
+            return 1
+          fi
+          if ! resolved=$(realpath -e -- "$candidate"); then
+            echo "$label does not resolve to a trusted-runtime file." >&2
+            return 1
+          fi
+          case "$resolved/" in
+            "$JEVYR_ACTION_ROOT/"*) ;;
+            *) echo "$label escaped the trusted runtime checkout." >&2; return 1 ;;
+          esac
+          if [[ ! -f "$resolved" ]]; then
+            echo "$label must resolve to a regular trusted-runtime file." >&2
+            return 1
+          fi
+          relative="${resolved#"$JEVYR_ACTION_ROOT/"}"
+          if [[ "$relative" == "$resolved" ]] \
+            || ! node "$JEVYR_TREE_GUARD" contains-file "$JEVYR_RUNTIME_FILESYSTEM" "$relative"; then
+            echo "$label must resolve to a file tracked by the exact trusted runtime commit." >&2
+            return 1
+          fi
+          printf '%s\n' "$resolved"
+        }
+        JEVYR_ASSAY_FRONTIER_FILE=""
+        JEVYR_FORGE_PLAN_FILE=""
+        if test -n "$JEVYR_ASSAY_FRONTIER_INPUT"; then
+          JEVYR_ASSAY_FRONTIER_FILE=$(trusted_configuration "$JEVYR_ASSAY_FRONTIER_INPUT" "assay-frontier")
+        elif test -n "$JEVYR_FORGE_PLAN_INPUT"; then
+          JEVYR_FORGE_PLAN_FILE=$(trusted_configuration "$JEVYR_FORGE_PLAN_INPUT" "forge-plan")
+        fi
+        mkdir -m 0700 -- "$JEVYR_STATE_DIR/home" "$JEVYR_STATE_DIR/tmp"
+        daemon_environment=(
+          env -i
+          "PATH=$PATH"
+          "HOME=$JEVYR_STATE_DIR/home"
+          "TMPDIR=$JEVYR_STATE_DIR/tmp"
+          "LANG=C.UTF-8"
+          "JEVYR_DATA_DIR=$JEVYR_STATE_DIR"
+          "JEVYR_PROJECT_ROOT=$JEVYR_ACTION_ROOT"
+          "JEVYR_PORT=0"
+        )
+        if test -n "$JEVYR_ASSAY_FRONTIER_FILE"; then
+          daemon_environment+=("JEVYR_ASSAY_FRONTIER_FILE=$JEVYR_ASSAY_FRONTIER_FILE")
+        elif test -n "$JEVYR_FORGE_PLAN_FILE"; then
+          daemon_environment+=("JEVYR_FORGE_PLAN_FILE=$JEVYR_FORGE_PLAN_FILE")
+        fi
+        JEVYR_PROVENANCE_SOURCE="$JEVYR_STATE_DIR/runtime-provenance.canonical.json"
+        JEVYR_REQUEST_EXPECTATION="$JEVYR_STATE_DIR/request-expectation.canonical.json"
+        env -i PATH="$PATH" HOME="$JEVYR_STATE_DIR/home" TMPDIR="$JEVYR_STATE_DIR/tmp" \
+          LANG=C.UTF-8 \
+          JEVYR_ACTION_ROOT="$JEVYR_ACTION_ROOT" \
+          JEVYR_PROVENANCE_SOURCE="$JEVYR_PROVENANCE_SOURCE" \
+          JEVYR_REQUEST_EXPECTATION="$JEVYR_REQUEST_EXPECTATION" \
+          JEVYR_IMPULSE="$JEVYR_IMPULSE" \
+          JEVYR_WORKFLOW_SHA="$JEVYR_WORKFLOW_SHA" \
+          JEVYR_RUNTIME_REPOSITORY="$JEVYR_RUNTIME_REPOSITORY" \
+          JEVYR_RUNTIME_SHA="$JEVYR_RUNTIME_SHA" \
+          JEVYR_RUNTIME_TREE="$JEVYR_RUNTIME_TREE" \
+          JEVYR_RUNTIME_LOCK_DIGEST="$JEVYR_RUNTIME_LOCK_DIGEST" \
+          JEVYR_SUBJECT_REPOSITORY="$JEVYR_SUBJECT_REPOSITORY" \
+          JEVYR_SUBJECT_SHA="$JEVYR_EXPECTED_SHA" \
+          JEVYR_SUBJECT_ROOT="$JEVYR_SUBJECT_ROOT" \
+          JEVYR_SUBJECT_TREE="$JEVYR_SUBJECT_TREE" \
+          JEVYR_EVENT_NAME="$JEVYR_EVENT_NAME" \
+          JEVYR_RUN_ID="$JEVYR_RUN_ID" \
+          JEVYR_RUN_ATTEMPT="$JEVYR_RUN_ATTEMPT" \
+          JEVYR_PULL_REQUEST_NUMBER="$JEVYR_PULL_REQUEST_NUMBER" \
+          node --input-type=module <<'NODE'
+        import { createHash } from "node:crypto";
+        import { writeFileSync } from "node:fs";
+        import { join } from "node:path";
+        import { pathToFileURL } from "node:url";
+
+        const required = [
+          "JEVYR_ACTION_ROOT", "JEVYR_PROVENANCE_SOURCE", "JEVYR_REQUEST_EXPECTATION",
+          "JEVYR_IMPULSE", "JEVYR_WORKFLOW_SHA",
+          "JEVYR_RUNTIME_REPOSITORY", "JEVYR_RUNTIME_SHA", "JEVYR_RUNTIME_TREE",
+          "JEVYR_RUNTIME_LOCK_DIGEST", "JEVYR_SUBJECT_REPOSITORY", "JEVYR_SUBJECT_SHA",
+          "JEVYR_SUBJECT_ROOT", "JEVYR_SUBJECT_TREE",
+          "JEVYR_EVENT_NAME", "JEVYR_RUN_ID", "JEVYR_RUN_ATTEMPT",
+        ];
+        if (required.some((name) => !process.env[name])) {
+          throw new Error("Jevyr provenance environment is incomplete");
+        }
+        const actionRoot = process.env.JEVYR_ACTION_ROOT;
+        const destination = process.env.JEVYR_PROVENANCE_SOURCE;
+        const requestDestination = process.env.JEVYR_REQUEST_EXPECTATION;
+        const gitOid = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
+        const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+        const positiveInteger = /^[1-9][0-9]*$/u;
+        const eventName = process.env.JEVYR_EVENT_NAME;
+        const pullRequestNumber = process.env.JEVYR_PULL_REQUEST_NUMBER || null;
+        if (
+          !gitOid.test(process.env.JEVYR_WORKFLOW_SHA)
+          || !gitOid.test(process.env.JEVYR_RUNTIME_SHA)
+          || !gitOid.test(process.env.JEVYR_RUNTIME_TREE)
+          || !gitOid.test(process.env.JEVYR_SUBJECT_SHA)
+          || !gitOid.test(process.env.JEVYR_SUBJECT_TREE)
+          || !/^[a-f0-9]{64}$/u.test(process.env.JEVYR_RUNTIME_LOCK_DIGEST)
+          || !repository.test(process.env.JEVYR_RUNTIME_REPOSITORY)
+          || !repository.test(process.env.JEVYR_SUBJECT_REPOSITORY)
+          || !positiveInteger.test(process.env.JEVYR_RUN_ID)
+          || !positiveInteger.test(process.env.JEVYR_RUN_ATTEMPT)
+          || !["pull_request_target", "workflow_dispatch"].includes(eventName)
+          || (eventName === "pull_request_target") !== (pullRequestNumber !== null)
+          || (pullRequestNumber !== null && !positiveInteger.test(pullRequestNumber))
+        ) throw new Error("Jevyr provenance fields are malformed");
+        const sdk = await import(pathToFileURL(join(actionRoot, "packages/sdk/dist/index.js")).href);
+        const provenance = {
+          protocol: "jevyr.github-advisory-provenance/1",
+          eventName,
+          workflowSha: process.env.JEVYR_WORKFLOW_SHA,
+          runtimeRepository: process.env.JEVYR_RUNTIME_REPOSITORY,
+          runtimeSha: process.env.JEVYR_RUNTIME_SHA,
+          runtimeTreeOid: process.env.JEVYR_RUNTIME_TREE,
+          runtimeLockDigest: `sha256:${process.env.JEVYR_RUNTIME_LOCK_DIGEST}`,
+          subjectRepository: process.env.JEVYR_SUBJECT_REPOSITORY,
+          subjectSha: process.env.JEVYR_SUBJECT_SHA,
+          runId: process.env.JEVYR_RUN_ID,
+          runAttempt: process.env.JEVYR_RUN_ATTEMPT,
+          pullRequestNumber,
+        };
+        const provenanceText = sdk.canonicalJson(provenance);
+        writeFileSync(destination, provenanceText, { mode: 0o600, flag: "wx" });
+
+        const impulse = process.env.JEVYR_IMPULSE.trim();
+        if (!impulse || impulse.length > 100_000) throw new Error("Jevyr impulse is empty or exceeds the protocol limit");
+        const sourceReference = {
+          id: "subject-1",
+          kind: "git",
+          locator: process.env.JEVYR_SUBJECT_ROOT,
+          revision: process.env.JEVYR_SUBJECT_SHA,
+        };
+        const provenanceReference = { id: "subject-2", kind: "text", locator: provenanceText };
+        const submission = {
+          protocol: "jevyr.case/1",
+          case: {
+            impulse,
+            subjects: [sourceReference, provenanceReference],
+            privacy: "local_only",
+            control: "sovereign",
+          },
+        };
+        const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+        const digestJson = (value) => digest(Buffer.from(sdk.canonicalJson(value), "utf8"));
+        const submissionDigest = digestJson(submission);
+        const seed = submissionDigest.slice("sha256:".length, "sha256:".length + 32);
+        const normalizedIntent = {
+          impulse,
+          mode: "auto",
+          subjects: [sourceReference, provenanceReference],
+          constraints: [],
+          requestedAssays: [],
+          privacy: "local_only",
+          control: "sovereign",
+          seed,
+        };
+        const emptyDigest = digest(Buffer.alloc(0));
+        const sourceSnapshotDigest = digestJson({
+          protocol: "jevyr.git-snapshot/1",
+          commitOid: process.env.JEVYR_SUBJECT_SHA,
+          treeOid: process.env.JEVYR_SUBJECT_TREE,
+          headOid: process.env.JEVYR_SUBJECT_SHA,
+          statusDigest: emptyDigest,
+          diffDigest: emptyDigest,
+          untracked: [],
+          dirty: false,
+        });
+        const expectation = {
+          protocol: "jevyr.github-advisory-request-expectation/1",
+          impulseDigest: digest(Buffer.from(impulse, "utf8")),
+          impulseBytes: Buffer.byteLength(impulse, "utf8"),
+          submissionDigest,
+          normalizedIntentDigest: digestJson(normalizedIntent),
+          seed,
+          sourceSnapshotDigest,
+        };
+        writeFileSync(requestDestination, sdk.canonicalJson(expectation), { mode: 0o600, flag: "wx" });
+        NODE
+        JEVYR_PROVENANCE_JSON=$(<"$JEVYR_PROVENANCE_SOURCE")
+        JEVYR_REQUEST_EXPECTATION_JSON=$(<"$JEVYR_REQUEST_EXPECTATION")
+        (
+          cd "$GITHUB_WORKSPACE"
+          exec "${daemon_environment[@]}" node "$JEVYR_ACTION_ROOT/apps/daemon/dist/main.js" serve
+        ) >"$JEVYR_STATE_DIR/daemon.log" 2>&1 &
+        daemon_pid=$!
+        cleanup_daemon() {
+          kill "$daemon_pid" 2>/dev/null || true
+          wait "$daemon_pid" 2>/dev/null || true
+        }
+        trap cleanup_daemon EXIT
+        daemon_port=""
+        for attempt in $(seq 1 80); do
+          if ! kill -0 "$daemon_pid" 2>/dev/null; then
+            echo "The trusted Jevyr daemon exited before becoming ready." >&2
+            exit 1
+          fi
+          daemon_port=$(sed -nE 's#^Jevyr daemon listening at http://127\.0\.0\.1:([0-9]+)$#\1#p' "$JEVYR_STATE_DIR/daemon.log" | tail -n 1)
+          test -n "$daemon_port" && break
+          sleep 0.25
+        done
+        if ! [[ "$daemon_port" =~ ^[0-9]+$ ]] || (( daemon_port < 1 || daemon_port > 65535 )); then
+          echo "The trusted Jevyr daemon did not publish a valid loopback port." >&2
+          exit 1
+        fi
+        export JEVYR_URL="http://127.0.0.1:$daemon_port"
+        curl --disable --noproxy '*' --proto '=http' --fail --silent --show-error \
+          --connect-timeout 2 --max-time 5 "$JEVYR_URL/health" >/dev/null
+        jevyr_cli() {
+          (
+            cd "$JEVYR_ACTION_ROOT"
+            env -i PATH="$PATH" HOME="$JEVYR_STATE_DIR/home" TMPDIR="$JEVYR_STATE_DIR/tmp" \
+              LANG=C.UTF-8 JEVYR_URL="$JEVYR_URL" \
+              node "$JEVYR_ACTION_ROOT/apps/cli/dist/main.js" "$@"
+          )
+        }
+        cast_json=$(jevyr_cli cast \
+          --subject "git:${JEVYR_SUBJECT_ROOT}@${JEVYR_EXPECTED_SHA}" \
+          --subject "text:${JEVYR_PROVENANCE_JSON}" \
+          --privacy local_only --control sovereign --json -- "$JEVYR_IMPULSE" \
+          2>>"$JEVYR_STATE_DIR/cli.log")
+        case_id=$(env -i PATH="$PATH" HOME="$JEVYR_STATE_DIR/home" TMPDIR="$JEVYR_STATE_DIR/tmp" \
+          LANG=C.UTF-8 node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).caseId))' <<<"$cast_json")
+        if ! grep -Eq '^case_[a-f0-9]{16}$' <<<"$case_id"; then
+          echo "Jevyr returned a noncanonical Case identifier." >&2
+          exit 1
+        fi
+        jevyr_cli watch "$case_id" --json > "$JEVYR_STATE_DIR/watch.ndjson" 2>>"$JEVYR_STATE_DIR/cli.log"
+        jevyr_cli replay "$case_id" --json > "$JEVYR_PUBLIC_DIR/replay.json" 2>>"$JEVYR_STATE_DIR/cli.log"
+        curl_json() {
+          curl --disable --noproxy '*' --proto '=http' --fail --silent --show-error \
+            --connect-timeout 2 --max-time 30 --max-filesize 268435456 "$1"
+        }
+        curl_json "$JEVYR_URL/v1/cases/$case_id/seal" > "$JEVYR_PUBLIC_DIR/seal.json"
+        curl_json "$JEVYR_URL/v1/cases/$case_id/seal/envelope" > "$JEVYR_PUBLIC_DIR/seal.dsse.json"
+        curl_json "$JEVYR_URL/v1/cases/$case_id/record" > "$JEVYR_PUBLIC_DIR/record.json"
+        curl_json "$JEVYR_URL/v1/cases/$case_id/record/envelope" > "$JEVYR_PUBLIC_DIR/record.dsse.json"
+        curl_json "$JEVYR_URL/v1/cases/$case_id/terminal" > "$JEVYR_PUBLIC_DIR/terminal.json"
+        curl_json "$JEVYR_URL/v1/cases/$case_id/terminal/envelope" > "$JEVYR_PUBLIC_DIR/terminal.dsse.json"
+        export JEVYR_CASE_ID="$case_id"
+        export JEVYR_PUBLIC_DIR
+        export JEVYR_ACTION_ROOT
+        export JEVYR_RUNTIME_SHA
+        export JEVYR_RUNTIME_TREE
+        export JEVYR_RUNTIME_LOCK_DIGEST
+        export JEVYR_SUBJECT_SHA="$JEVYR_EXPECTED_SHA"
+        export JEVYR_SUBJECT_ROOT
+        export JEVYR_STATE_DIR
+        export JEVYR_PROVENANCE_SOURCE
+        env -i PATH="$PATH" HOME="$JEVYR_STATE_DIR/home" TMPDIR="$JEVYR_STATE_DIR/tmp" \
+          LANG=C.UTF-8 JEVYR_URL="$JEVYR_URL" JEVYR_CASE_ID="$JEVYR_CASE_ID" \
+          JEVYR_PUBLIC_DIR="$JEVYR_PUBLIC_DIR" JEVYR_ACTION_ROOT="$JEVYR_ACTION_ROOT" \
+          JEVYR_RUNTIME_SHA="$JEVYR_RUNTIME_SHA" JEVYR_RUNTIME_TREE="$JEVYR_RUNTIME_TREE" \
+          JEVYR_RUNTIME_LOCK_DIGEST="$JEVYR_RUNTIME_LOCK_DIGEST" \
+          JEVYR_SUBJECT_SHA="$JEVYR_SUBJECT_SHA" JEVYR_SUBJECT_ROOT="$JEVYR_SUBJECT_ROOT" \
+          JEVYR_WORKFLOW_SHA="$JEVYR_WORKFLOW_SHA" \
+          JEVYR_RUNTIME_REPOSITORY="$JEVYR_RUNTIME_REPOSITORY" \
+          JEVYR_SUBJECT_REPOSITORY="$JEVYR_SUBJECT_REPOSITORY" \
+          JEVYR_EVENT_NAME="$JEVYR_EVENT_NAME" JEVYR_RUN_ID="$JEVYR_RUN_ID" \
+          JEVYR_RUN_ATTEMPT="$JEVYR_RUN_ATTEMPT" \
+          JEVYR_PULL_REQUEST_NUMBER="$JEVYR_PULL_REQUEST_NUMBER" \
+          JEVYR_STATE_DIR="$JEVYR_STATE_DIR" JEVYR_PROVENANCE_SOURCE="$JEVYR_PROVENANCE_SOURCE" \
+          JEVYR_REQUEST_EXPECTATION_JSON="$JEVYR_REQUEST_EXPECTATION_JSON" \
+          node --input-type=module <<'NODE'
+        import { createHash } from "node:crypto";
+        import { lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+        import { join } from "node:path";
+        import { pathToFileURL } from "node:url";
+
+        const base = process.env.JEVYR_URL;
+        const caseId = process.env.JEVYR_CASE_ID;
+        const output = process.env.JEVYR_PUBLIC_DIR;
+        const actionRoot = process.env.JEVYR_ACTION_ROOT;
+        const runtimeSha = process.env.JEVYR_RUNTIME_SHA;
+        const runtimeTreeOid = process.env.JEVYR_RUNTIME_TREE;
+        const runtimeLockDigest = process.env.JEVYR_RUNTIME_LOCK_DIGEST;
+        const subjectSha = process.env.JEVYR_SUBJECT_SHA;
+        const subjectRoot = process.env.JEVYR_SUBJECT_ROOT;
+        const workflowSha = process.env.JEVYR_WORKFLOW_SHA;
+        const runtimeRepository = process.env.JEVYR_RUNTIME_REPOSITORY;
+        const subjectRepository = process.env.JEVYR_SUBJECT_REPOSITORY;
+        const eventName = process.env.JEVYR_EVENT_NAME;
+        const runId = process.env.JEVYR_RUN_ID;
+        const runAttempt = process.env.JEVYR_RUN_ATTEMPT;
+        const pullRequestNumber = process.env.JEVYR_PULL_REQUEST_NUMBER || null;
+        const stateDir = process.env.JEVYR_STATE_DIR;
+        const provenanceSource = process.env.JEVYR_PROVENANCE_SOURCE;
+        const requestExpectationJson = process.env.JEVYR_REQUEST_EXPECTATION_JSON;
+        if (
+          !base || !caseId || !output || !actionRoot || !runtimeSha || !runtimeTreeOid
+          || !runtimeLockDigest || !subjectSha || !subjectRoot || !workflowSha
+          || !runtimeRepository || !subjectRepository || !eventName || !runId
+          || !runAttempt || !stateDir || !provenanceSource || !requestExpectationJson
+        ) {
+          throw new Error("Jevyr export environment is incomplete");
+        }
+        const gitOid = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
+        const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+        const positiveInteger = /^[1-9][0-9]*$/u;
+        if (
+          !gitOid.test(runtimeSha) || !gitOid.test(runtimeTreeOid)
+          || !gitOid.test(subjectSha) || !gitOid.test(workflowSha)
+          || !/^[a-f0-9]{64}$/u.test(runtimeLockDigest)
+          || !repository.test(runtimeRepository) || !repository.test(subjectRepository)
+          || !positiveInteger.test(runId) || !positiveInteger.test(runAttempt)
+          || !["pull_request_target", "workflow_dispatch"].includes(eventName)
+          || (eventName === "pull_request_target") !== (pullRequestNumber !== null)
+          || (pullRequestNumber !== null && !positiveInteger.test(pullRequestNumber))
+        ) throw new Error("Jevyr export provenance is malformed");
+
+        const sdk = await import(pathToFileURL(join(actionRoot, "packages/sdk/dist/index.js")).href);
+        const core = await import(pathToFileURL(join(actionRoot, "packages/core/dist/index.js")).href);
+        const MAX_JSON_RESPONSE_BYTES = 256 * 1_048_576;
+        const MAX_ARTIFACT_RESPONSE_BYTES = 512 * 1_048_576;
+        const MAX_BUNDLE_BYTES = 10_500_000_000;
+
+        async function response(path) {
+          const url = `${base}${path}`;
+          const value = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+          if (!value.ok) throw new Error(`${path} returned ${value.status}`);
+          if (value.url !== url) throw new Error(`${path} escaped the verified loopback endpoint`);
+          return value;
+        }
+        async function boundedBody(value, maximumBytes, label) {
+          if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
+            throw new Error(`${label} has an invalid byte limit`);
+          }
+          const declaredHeader = value.headers.get("content-length");
+          if (declaredHeader !== null) {
+            if (!/^(?:0|[1-9][0-9]*)$/u.test(declaredHeader)) {
+              throw new Error(`${label} has a noncanonical Content-Length`);
+            }
+            const declared = Number(declaredHeader);
+            if (!Number.isSafeInteger(declared) || declared > maximumBytes) {
+              throw new Error(`${label} exceeds its byte limit`);
+            }
+          }
+          if (value.body === null) {
+            if (declaredHeader === "0") return Buffer.alloc(0);
+            throw new Error(`${label} has no response body`);
+          }
+          const chunks = [];
+          const reader = value.body.getReader();
+          let total = 0;
+          try {
+            while (true) {
+              const { done, value: chunk } = await reader.read();
+              if (done) break;
+              total += chunk.byteLength;
+              if (!Number.isSafeInteger(total) || total > maximumBytes) {
+                await reader.cancel(`${label} exceeds its byte limit`);
+                throw new Error(`${label} exceeds its byte limit`);
+              }
+              chunks.push(Buffer.from(chunk));
+            }
+          } finally {
+            reader.releaseLock();
+          }
+          if (declaredHeader !== null && total !== Number(declaredHeader)) {
+            throw new Error(`${label} does not match Content-Length`);
+          }
+          return Buffer.concat(chunks, total);
+        }
+        async function json(path) {
+          const value = await response(path);
+          if (value.headers.get("content-type") !== "application/json; charset=utf-8") {
+            throw new Error(`${path} did not return canonical Jevyr JSON`);
+          }
+          return core.parseJsonBytes(
+            await boundedBody(value, MAX_JSON_RESPONSE_BYTES, path),
+            `Loopback response ${path}`,
+          );
+        }
+        const writeJson = (name, value) =>
+          writeFileSync(join(output, name), `${JSON.stringify(value, null, 2)}\n`, {
+            mode: 0o600,
+            flag: "wx",
+          });
+        const readJson = (name) => core.parseJsonBytes(
+          readFileSync(join(output, name)),
+          `Exported ${name}`,
+        );
+        const readRegular = (path, label) => {
+          const info = lstatSync(path);
+          if (info.isSymbolicLink() || !info.isFile()) throw new Error(`${label} is not a regular file`);
+          return readFileSync(path);
+        };
+        const exactKeys = (value, keys, label) => {
+          if (value === null || typeof value !== "object" || Array.isArray(value)) {
+            throw new Error(`${label} is not an object`);
+          }
+          const actual = Object.keys(value).sort();
+          const expected = [...keys].sort();
+          if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+            throw new Error(`${label} fields do not match the exact request`);
+          }
+        };
+        const byteDigest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+        const expectedProvenance = {
+          protocol: "jevyr.github-advisory-provenance/1",
+          eventName,
+          workflowSha,
+          runtimeRepository,
+          runtimeSha,
+          runtimeTreeOid,
+          runtimeLockDigest: `sha256:${runtimeLockDigest}`,
+          subjectRepository,
+          subjectSha,
+          runId,
+          runAttempt,
+          pullRequestNumber,
+        };
+        const provenanceBytes = readRegular(provenanceSource, "Canonical runtime provenance");
+        const provenance = core.parseJsonBytes(provenanceBytes, "Canonical runtime provenance");
+        const provenanceText = sdk.canonicalJson(expectedProvenance);
+        if (
+          sdk.canonicalJson(provenance) !== provenanceText
+          || !provenanceBytes.equals(Buffer.from(provenanceText, "utf8"))
+        ) throw new Error("Runtime provenance changed after it was prepared for Seal");
+        const requestExpectationBytes = Buffer.from(requestExpectationJson, "utf8");
+        const requestExpectation = core.parseJsonBytes(requestExpectationBytes, "Request expectation");
+        exactKeys(requestExpectation, [
+          "protocol", "impulseDigest", "impulseBytes", "submissionDigest",
+          "normalizedIntentDigest", "seed", "sourceSnapshotDigest",
+        ], "Request expectation");
+        if (
+          requestExpectation.protocol !== "jevyr.github-advisory-request-expectation/1"
+          || !/^sha256:[a-f0-9]{64}$/u.test(requestExpectation.impulseDigest)
+          || !Number.isSafeInteger(requestExpectation.impulseBytes) || requestExpectation.impulseBytes < 1
+          || !/^sha256:[a-f0-9]{64}$/u.test(requestExpectation.submissionDigest)
+          || !/^sha256:[a-f0-9]{64}$/u.test(requestExpectation.normalizedIntentDigest)
+          || !/^[a-f0-9]{32}$/u.test(requestExpectation.seed)
+          || requestExpectation.seed !== requestExpectation.submissionDigest.slice("sha256:".length, "sha256:".length + 32)
+          || !/^sha256:[a-f0-9]{64}$/u.test(requestExpectation.sourceSnapshotDigest)
+        ) throw new Error("Request expectation is malformed");
+
+        const sealedPath = join(stateDir, "cases", caseId, "sealed.json");
+        const sealed = sdk.assertSealedCase(core.parseJsonBytes(
+          readRegular(sealedPath, "Persisted immutable Case"),
+          "Persisted immutable Case",
+        ));
+        const [sourceReference, provenanceReference] = sealed.intent.subjects;
+        const [sourceSnapshot, provenanceSnapshot] = sealed.subjects;
+        const provenanceDigest = byteDigest(provenanceBytes);
+        const intentBytes = Buffer.from(sdk.canonicalJson(sealed.intent), "utf8");
+        const intentImpulseBytes = Buffer.from(sealed.intent.impulse, "utf8");
+        const contractImpulseBytes = Buffer.from(sealed.intentContract.originalImpulse, "utf8");
+        const recompiledIntentContract = core.compileIntentContract({
+          impulse: sealed.intent.impulse,
+          constraints: [],
+          requestedAssays: [],
+          subjectIds: ["subject-1", "subject-2"],
+        });
+        exactKeys(sealed.intent, [
+          "impulse", "mode", "subjects", "constraints", "requestedAssays",
+          "privacy", "control", "seed",
+        ], "Normalized Case intent");
+        exactKeys(sourceReference, ["id", "kind", "locator", "revision"], "Git subject reference");
+        exactKeys(provenanceReference, ["id", "kind", "locator"], "Provenance subject reference");
+        exactKeys(sourceSnapshot, ["subjectId", "digest", "resolvedLocator", "revision", "capturedAt"], "Git subject snapshot");
+        exactKeys(provenanceSnapshot, ["subjectId", "digest", "resolvedLocator", "capturedAt", "byteLength"], "Provenance subject snapshot");
+        if (
+          sealed.submissionDigest !== requestExpectation.submissionDigest
+          || byteDigest(intentBytes) !== requestExpectation.normalizedIntentDigest
+          || byteDigest(intentImpulseBytes) !== requestExpectation.impulseDigest
+          || intentImpulseBytes.byteLength !== requestExpectation.impulseBytes
+          || byteDigest(contractImpulseBytes) !== requestExpectation.impulseDigest
+          || contractImpulseBytes.byteLength !== requestExpectation.impulseBytes
+          || sealed.intentContract.originalImpulseDigest !== requestExpectation.impulseDigest
+          || sealed.intentContract.originalImpulse !== sealed.intent.impulse
+          || sdk.canonicalJson(sealed.intentContract) !== sdk.canonicalJson(recompiledIntentContract)
+          || sealed.intent.seed !== requestExpectation.seed
+          || sealed.intent.mode !== "auto" || sealed.intent.privacy !== "local_only"
+          || sealed.intent.control !== "sovereign"
+          || sealed.intent.constraints.length !== 0 || sealed.intent.requestedAssays.length !== 0
+          || sdk.canonicalJson(sealed.intentContract.subjectIds) !== sdk.canonicalJson(["subject-1", "subject-2"])
+          || sealed.intent.subjects.length !== 2 || sealed.subjects.length !== 2
+          || sourceReference?.id !== "subject-1" || sourceReference.kind !== "git"
+          || sourceReference.locator !== subjectRoot || sourceReference.revision !== subjectSha
+          || provenanceReference?.id !== "subject-2" || provenanceReference.kind !== "text"
+          || provenanceReference.locator !== provenanceText
+          || Object.hasOwn(provenanceReference, "revision") || Object.hasOwn(provenanceReference, "mediaType")
+          || sourceSnapshot?.subjectId !== "subject-1" || sourceSnapshot.revision !== subjectSha
+          || sourceSnapshot.resolvedLocator !== subjectRoot
+          || sourceSnapshot.digest !== requestExpectation.sourceSnapshotDigest
+          || sourceSnapshot.capturedAt !== sealed.sealedAt
+          || provenanceSnapshot?.subjectId !== "subject-2"
+          || provenanceSnapshot.digest !== provenanceDigest
+          || provenanceSnapshot.resolvedLocator !== "inline:subject-2"
+          || provenanceSnapshot.byteLength !== provenanceBytes.byteLength
+          || provenanceSnapshot.capturedAt !== sealed.sealedAt
+        ) throw new Error("The immutable Case does not bind the exact one-shot request and subject snapshots");
+
+        const [statusValue, trustValue, intentValue, policyValue, artifactIndexValue] = await Promise.all([
+          json(`/v1/cases/${encodeURIComponent(caseId)}`),
+          json("/v1/trust"),
+          json(`/v1/cases/${encodeURIComponent(caseId)}/intent-contract`),
+          json(`/v1/cases/${encodeURIComponent(caseId)}/policy-descriptor`),
+          json(`/v1/cases/${encodeURIComponent(caseId)}/artifacts`),
+        ]);
+        const status = sdk.assertCaseStatus(statusValue);
+        if (status.lifecycle !== "terminated" && status.lifecycle !== "invalid") {
+          throw new Error("Proof export began before the Case reached a terminal status");
+        }
+        const trust = await sdk.assertPublicTrustBundle(trustValue);
+        const intent = sdk.assertIntentContractPayload(intentValue);
+        const policy = await sdk.assertCasePolicyDescriptor(policyValue, caseId);
+        const artifactIndex = sdk.assertArtifactList(artifactIndexValue, caseId);
+        writeJson("status.json", status);
+        writeJson("trust.json", trust);
+        writeJson("intent-contract.json", intent);
+        writeJson("policy-descriptor.json", policy);
+        writeJson("sealed.json", sealed);
+        writeFileSync(join(output, "runtime-provenance.json"), provenanceBytes, { mode: 0o600, flag: "wx" });
+
+        const events = [];
+        let after = 0;
+        let priorDigest = null;
+        while (true) {
+          const page = await sdk.assertLiveEventBatch(
+            await json(`/v1/cases/${encodeURIComponent(caseId)}/events?after=${after}&waitMs=0&limit=2000`),
+            after,
+          );
+          if (page.caseDigest !== status.caseDigest || page.runDigest !== status.runDigest) {
+            throw new Error("Event export crossed the terminal Case identity");
+          }
+          if (page.events.length > 0 && page.events[0].priorDigest !== priorDigest) {
+            throw new Error("Event export broke continuity across page boundaries");
+          }
+          events.push(...page.events);
+          if (page.throughSequence < after || (page.throughSequence === after && !page.caughtUp)) {
+            throw new Error("Event export made no monotonic progress");
+          }
+          after = page.throughSequence;
+          priorDigest = page.events.at(-1)?.eventDigest ?? priorDigest;
+          if (page.caughtUp) break;
+        }
+        if (
+          events.length !== status.lastSequence
+          || (events.length > 0 && events.at(-1)?.sequence !== status.lastSequence)
+          || priorDigest !== status.headDigest
+        ) throw new Error("Exported events do not equal the exact terminal ledger");
+        writeJson("events.json", events);
+
+        const artifactDir = join(output, "artifacts");
+        mkdirSync(artifactDir, { recursive: false, mode: 0o700 });
+        writeJson("artifacts/index.json", artifactIndex);
+        let artifactBytes = 0;
+        let previousArtifactId = "";
+        const credentialArtifactNames = new Set([
+          ".git-credentials", ".netrc", ".npmrc", ".pypirc", "_netrc",
+          "application_default_credentials.json", "auth.json", "credentials",
+          "credentials.ini", "credentials.json", "credentials.toml", "credentials.yaml",
+          "credentials.yml", "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa",
+        ]);
+        const isCredentialArtifactName = (name) => {
+          const normalized = name.toLowerCase();
+          return normalized === ".env" || normalized.startsWith(".env.")
+            || credentialArtifactNames.has(normalized)
+            || [".key", ".pem", ".p12", ".pfx"].some((suffix) => normalized.endsWith(suffix))
+            || /^(?:\.?(?:credential|credentials|secret|secrets)|private[-_]?key|service[-_]?account)(?:[._-][a-z0-9_-]+)*$/u.test(normalized);
+        };
+        for (const meta of artifactIndex.artifacts) {
+          if (previousArtifactId && previousArtifactId >= meta.id) {
+            throw new Error("Artifact index is not in strict canonical identifier order");
+          }
+          if (isCredentialArtifactName(meta.name)) {
+            throw new Error(`Artifact ${meta.id} has a credential-like logical name`);
+          }
+          previousArtifactId = meta.id;
+          artifactBytes += meta.size;
+          if (
+            meta.size > MAX_ARTIFACT_RESPONSE_BYTES
+            || !Number.isSafeInteger(artifactBytes)
+            || artifactBytes > MAX_BUNDLE_BYTES
+          ) {
+            throw new Error("Artifact export exceeded its bounded byte budget");
+          }
+          const value = await response(`/v1/cases/${encodeURIComponent(caseId)}/artifacts/${encodeURIComponent(meta.id)}`);
+          const bytes = await boundedBody(value, meta.size, `Artifact ${meta.id}`);
+          const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+          if (
+            digest !== meta.digest ||
+            bytes.byteLength !== meta.size ||
+            value.headers.get("x-jevyr-digest") !== meta.digest ||
+            value.headers.get("content-type") !== meta.mediaType ||
+            value.headers.get("content-length") !== String(meta.size)
+          ) throw new Error(`Artifact ${meta.id} failed export verification`);
+          writeFileSync(join(artifactDir, `${meta.id}.blob`), bytes, { mode: 0o600, flag: "wx" });
+        }
+        const [finalStatusValue, finalArtifactIndexValue] = await Promise.all([
+          json(`/v1/cases/${encodeURIComponent(caseId)}`),
+          json(`/v1/cases/${encodeURIComponent(caseId)}/artifacts`),
+        ]);
+        const finalStatus = sdk.assertCaseStatus(finalStatusValue);
+        const finalArtifactIndex = sdk.assertArtifactList(finalArtifactIndexValue, caseId);
+        if (
+          sdk.canonicalJson(finalStatus) !== sdk.canonicalJson(status)
+          || sdk.canonicalJson(finalArtifactIndex) !== sdk.canonicalJson(artifactIndex)
+        ) throw new Error("Terminal status or artifact closure changed during proof export");
+
+        const seal = sdk.assertSealReceipt(readJson("seal.json"));
+        const record = sdk.assertRecordPayload(readJson("record.json"));
+        const terminal = sdk.assertTerminalReceipt(readJson("terminal.json"));
+        const sealEnvelope = readJson("seal.dsse.json");
+        const recordEnvelope = readJson("record.dsse.json");
+        const terminalEnvelope = readJson("terminal.dsse.json");
+        const verifiedSeal = await sdk.verifySealEnvelope(sealEnvelope, trust, seal);
+        const verifiedRecord = await sdk.verifyRecordEnvelope(recordEnvelope, trust, record);
+        const verifiedTerminal = await sdk.verifyTerminalEnvelope(terminalEnvelope, trust, terminal);
+        const recordDigest = byteDigest(Buffer.from(sdk.canonicalJson(record), "utf8"));
+        const artifactIndexDigest = byteDigest(Buffer.from(sdk.canonicalJson(artifactIndex), "utf8"));
+        const closedAt = events.at(-1)?.observedAt ?? status.updatedAt;
+        if (
+          seal.caseId !== caseId
+          || sdk.canonicalJson(core.sealReceipt(sealed)) !== sdk.canonicalJson(seal)
+          || seal.caseDigest !== status.caseDigest
+          || seal.runDigest !== status.runDigest
+          || record.caseDigest !== seal.caseDigest
+          || record.runDigest !== seal.runDigest
+          || record.policyDigest !== seal.policyDigest
+          || record.genomeDigest !== seal.genomeDigest
+          || record.searchDigest !== seal.searchDigest
+          || record.intentContractDigest !== seal.intentContractDigest
+          || record.verdict.policyVersion !== seal.policyVersion
+          || policy.artifact.descriptor.version !== seal.policyVersion
+          || intent.digest !== seal.intentContractDigest
+          || sdk.canonicalJson(intent) !== sdk.canonicalJson(sealed.intentContract)
+          || verifiedSeal.keyId !== verifiedRecord.keyId
+          || verifiedSeal.keyId !== verifiedTerminal.keyId
+          || terminal.caseId !== caseId
+          || terminal.caseDigest !== status.caseDigest
+          || terminal.runDigest !== status.runDigest
+          || terminal.lifecycle !== status.lifecycle
+          || terminal.stage !== status.stage
+          || terminal.stageStatus !== status.stageStatus
+          || terminal.lastSequence !== status.lastSequence
+          || terminal.eventHeadDigest !== status.headDigest
+          || terminal.recordDigest !== recordDigest
+          || terminal.artifactIndexDigest !== artifactIndexDigest
+          || terminal.closedAt !== status.updatedAt
+          || terminal.closedAt !== closedAt
+        ) throw new Error("Exported signed commitments do not share one sealed Case and terminal ledger identity");
+        writeFileSync(join(stateDir, "verified-key-id"), `${verifiedSeal.keyId}\n`, { mode: 0o600, flag: "wx" });
+        sdk.assertPolicyDescriptorRecordBinding(policy, record);
+
+        const replay = readJson("replay.json");
+        if (
+          replay?.valid !== true
+          || replay?.expected !== record.eventHeadDigest
+          || replay?.observed !== record.eventHeadDigest
+          || replay?.terminalHead !== status.headDigest
+          || replay?.events !== status.lastSequence
+          || !Array.isArray(replay?.problems) || replay.problems.length !== 0
+          || replay?.authenticity?.verification !== "dsse-ed25519"
+          || replay?.authenticity?.keyId !== verifiedRecord.keyId
+        ) throw new Error("Exported replay report does not prove this exact terminal bundle");
+
+        const expectedRootEntries = [
+          "artifacts", "events.json", "intent-contract.json", "policy-descriptor.json",
+          "record.dsse.json", "record.json", "replay.json", "runtime-provenance.json",
+          "seal.dsse.json", "seal.json", "sealed.json", "status.json",
+          "terminal.dsse.json", "terminal.json", "trust.json",
+        ].sort();
+        const expectedArtifactEntries = [
+          "index.json",
+          ...artifactIndex.artifacts.map((meta) => `${meta.id}.blob`),
+        ].sort();
+        if (
+          JSON.stringify(readdirSync(output).sort()) !== JSON.stringify(expectedRootEntries)
+          || JSON.stringify(readdirSync(artifactDir).sort()) !== JSON.stringify(expectedArtifactEntries)
+        ) throw new Error("The public proof directory does not have the closed bundle layout");
+        NODE
+        cleanup_daemon
+        trap - EXIT
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_EXECUTION_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_SUBJECT_ROOT" "$JEVYR_SUBJECT_FILESYSTEM"
+        git_subject() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_SUBJECT_ROOT" "$@"
+        }
+        JEVYR_SUBJECT_STATUS=$(git_subject status --porcelain=v2 --untracked-files=all --ignore-submodules=none)
+        test -z "$JEVYR_SUBJECT_STATUS"
+        git_subject ls-files --others --ignored --exclude-standard -z > "$RUNNER_TEMP/jevyr-source-ignored-prepublish"
+        test ! -s "$RUNNER_TEMP/jevyr-source-ignored-prepublish"
+        {
+          git_subject rev-parse --verify 'HEAD^{commit}'
+          git_subject rev-parse --verify 'HEAD^{tree}'
+          git_subject ls-files --stage -z
+          git_subject diff --no-ext-diff --no-textconv --binary HEAD --
+          git_subject ls-files --others --exclude-standard -z
+        } | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-source-prepublish.sha256"
+        cmp "$RUNNER_TEMP/jevyr-source-before.sha256" "$RUNNER_TEMP/jevyr-source-prepublish.sha256"
+        git_runtime() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_ACTION_ROOT" "$@"
+        }
+        JEVYR_OBSERVED_RUNTIME_SHA=$(git_runtime rev-parse --verify 'HEAD^{commit}')
+        test "$JEVYR_RUNTIME_SHA" = "$JEVYR_OBSERVED_RUNTIME_SHA"
+        JEVYR_RUNTIME_STATUS=$(git_runtime status --porcelain=v2 --untracked-files=no --ignore-submodules=none)
+        test -z "$JEVYR_RUNTIME_STATUS"
+        verify_runtime_control_namespace
+        {
+          git_runtime rev-parse --verify 'HEAD^{commit}'
+          git_runtime rev-parse --verify 'HEAD^{tree}'
+          git_runtime ls-files --stage -z
+          git_runtime diff --no-ext-diff --no-textconv --binary HEAD --
+        } | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-runtime-prepublish.sha256"
+        cmp "$RUNNER_TEMP/jevyr-runtime-before.sha256" "$RUNNER_TEMP/jevyr-runtime-prepublish.sha256"
+        JEVYR_IGNORE_IDENTITY=$(cat "$RUNNER_TEMP/jevyr-ignore-policy.sha256")
+        if [[ "$JEVYR_IGNORE_IDENTITY" == "absent" ]]; then
+          if [[ -e "$JEVYR_ACTION_ROOT/.jevyrignore" || -L "$JEVYR_ACTION_ROOT/.jevyrignore" ]]; then
+            echo "The trusted runtime ignore policy changed before publication." >&2
+            exit 1
+          fi
+          if [[ -e "$JEVYR_SUBJECT_ROOT/.jevyrignore" || -L "$JEVYR_SUBJECT_ROOT/.jevyrignore" ]]; then
+            echo "The subject's ignore policy differs from the trusted base before publication." >&2
+            exit 1
+          fi
+        else
+          if [[ ! -f "$JEVYR_ACTION_ROOT/.jevyrignore" || -L "$JEVYR_ACTION_ROOT/.jevyrignore" ]]; then
+            echo "The trusted runtime ignore policy is invalid before publication." >&2
+            exit 1
+          fi
+          if [[ ! -f "$JEVYR_SUBJECT_ROOT/.jevyrignore" || -L "$JEVYR_SUBJECT_ROOT/.jevyrignore" ]]; then
+            echo "The subject's ignore policy is invalid before publication." >&2
+            exit 1
+          fi
+          JEVYR_OBSERVED_IGNORE_IDENTITY=$(sha256sum "$JEVYR_ACTION_ROOT/.jevyrignore" | cut -d' ' -f1)
+          test "$JEVYR_IGNORE_IDENTITY" = "$JEVYR_OBSERVED_IGNORE_IDENTITY"
+          cmp -s -- "$JEVYR_ACTION_ROOT/.jevyrignore" "$JEVYR_SUBJECT_ROOT/.jevyrignore"
+        fi
+        private_named_file=$(find "$JEVYR_PUBLIC_DIR" -type f -iname '*private*' -print -quit)
+        if test -n "$private_named_file"; then
+          echo "Jevyr refused to export a private-key-named file." >&2
+          exit 1
+        fi
+        key_named_file=$(find "$JEVYR_PUBLIC_DIR" -type f \
+          \( -iname '*.pem' -o -iname '*.key' -o -iname 'id_rsa*' -o -iname 'id_ed25519*' \
+             -o -iname '.env' -o -iname '.env.*' -o -iname '*credentials*' \) -print -quit)
+        if test -n "$key_named_file"; then
+          echo "Jevyr refused to export a credential-named file." >&2
+          exit 1
+        fi
+        unsafe_entry=$(find "$JEVYR_PUBLIC_DIR" -mindepth 1 \
+          \( -type l -o \( -type f -links +1 \) -o \( ! -type f ! -type d \) \) -print -quit)
+        if test -n "$unsafe_entry"; then
+          echo "Jevyr refused to export a linked or special filesystem entry." >&2
+          exit 1
+        fi
+        credential_scan_status=0
+        grep -Ralm1E -- \
+          'BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY|github_pat_[A-Za-z0-9_]{40,255}|gh[pousr]_[A-Za-z0-9]{36,255}|AKIA[0-9A-Z]{16}|sk-(proj-)?[A-Za-z0-9_-]{20,}' \
+          "$JEVYR_PUBLIC_DIR" >/dev/null || credential_scan_status=$?
+        if (( credential_scan_status == 0 )); then
+          echo "Jevyr refused a public bundle containing recognizable credential material." >&2
+          exit 1
+        elif (( credential_scan_status != 1 )); then
+          echo "Jevyr could not complete the public-bundle credential scan." >&2
+          exit 1
+        fi
+        (
+          cd "$JEVYR_PUBLIC_DIR"
+          find . -type f ! -name MANIFEST.sha256 -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum > MANIFEST.sha256
+          sha256sum --check MANIFEST.sha256 >/dev/null
+        )
+        JEVYR_VERIFIED_KEY_ID=$(<"$JEVYR_STATE_DIR/verified-key-id")
+        if ! [[ "$JEVYR_VERIFIED_KEY_ID" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+          echo "Jevyr did not produce a canonical verified DSSE key ID." >&2
+          exit 1
+        fi
+        jevyr_cli verify-bundle "$JEVYR_PUBLIC_DIR" \
+          --trusted-key-id "$JEVYR_VERIFIED_KEY_ID" \
+          --expected-runtime-sha "$JEVYR_RUNTIME_SHA" \
+          --expected-subject-sha "$JEVYR_EXPECTED_SHA" \
+          --expected-workflow-sha "$JEVYR_WORKFLOW_SHA" \
+          --json > "$JEVYR_STATE_DIR/bundle-verification.json" \
+          2>>"$JEVYR_STATE_DIR/cli.log"
+        JEVYR_BUNDLE_ARCHIVE=$(mktemp \
+          "$JEVYR_TEMP_ROOT/jevyr-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX.tar")
+        LC_ALL=C tar --format=posix --sort=name --mtime='@0' \
+          --pax-option=delete=atime,delete=ctime --owner=0 --group=0 --numeric-owner \
+          --mode='u+rw,go-rwx' --create --file "$JEVYR_BUNDLE_ARCHIVE" \
+          --directory "$JEVYR_PUBLIC_DIR" .
+        chmod 0400 "$JEVYR_BUNDLE_ARCHIVE"
+        JEVYR_BUNDLE_ARCHIVE_DIGEST="sha256:$(sha256sum < "$JEVYR_BUNDLE_ARCHIVE" | cut -d' ' -f1)"
+        JEVYR_ARCHIVE_CHECK_DIR=$(mktemp -d \
+          "$JEVYR_TEMP_ROOT/jevyr-archive-check-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")
+        tar --extract --file "$JEVYR_BUNDLE_ARCHIVE" --directory "$JEVYR_ARCHIVE_CHECK_DIR" \
+          --no-same-owner --no-same-permissions
+        jevyr_cli verify-bundle "$JEVYR_ARCHIVE_CHECK_DIR" \
+          --trusted-key-id "$JEVYR_VERIFIED_KEY_ID" \
+          --expected-runtime-sha "$JEVYR_RUNTIME_SHA" \
+          --expected-subject-sha "$JEVYR_EXPECTED_SHA" \
+          --expected-workflow-sha "$JEVYR_WORKFLOW_SHA" \
+          --json > "$JEVYR_STATE_DIR/archive-verification.json" \
+          2>>"$JEVYR_STATE_DIR/cli.log"
+        printf 'case-id=%s\n' "$case_id" >> "$GITHUB_OUTPUT"
+        printf 'record-path=%s\n' "$JEVYR_PUBLIC_DIR/record.json" >> "$GITHUB_OUTPUT"
+        printf 'record-envelope-path=%s\n' "$JEVYR_PUBLIC_DIR/record.dsse.json" >> "$GITHUB_OUTPUT"
+        printf 'terminal-path=%s\n' "$JEVYR_PUBLIC_DIR/terminal.json" >> "$GITHUB_OUTPUT"
+        printf 'terminal-envelope-path=%s\n' "$JEVYR_PUBLIC_DIR/terminal.dsse.json" >> "$GITHUB_OUTPUT"
+        printf 'replay-path=%s\n' "$JEVYR_PUBLIC_DIR/replay.json" >> "$GITHUB_OUTPUT"
+        printf 'public-directory=%s\n' "$JEVYR_PUBLIC_DIR" >> "$GITHUB_OUTPUT"
+        printf 'bundle-archive-path=%s\n' "$JEVYR_BUNDLE_ARCHIVE" >> "$GITHUB_OUTPUT"
+        printf 'bundle-archive-digest=%s\n' "$JEVYR_BUNDLE_ARCHIVE_DIGEST" >> "$GITHUB_OUTPUT"
+        printf 'source-sha=%s\n' "$JEVYR_EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+        printf 'runtime-sha=%s\n' "$JEVYR_RUNTIME_SHA" >> "$GITHUB_OUTPUT"
+        printf 'key-id=%s\n' "$JEVYR_VERIFIED_KEY_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Prove subject and runtime remained unchanged
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        JEVYR_SUBJECT_ROOT=$(cat "$RUNNER_TEMP/jevyr-subject-root")
+        JEVYR_ACTION_ROOT=$(cat "$RUNNER_TEMP/jevyr-action-root")
+        JEVYR_TREE_GUARD="$RUNNER_TEMP/jevyr-filesystem-manifest.mjs"
+        JEVYR_RUNTIME_FILESYSTEM="$RUNNER_TEMP/jevyr-runtime-filesystem.json"
+        JEVYR_RUNTIME_EXECUTION_FILESYSTEM="$RUNNER_TEMP/jevyr-runtime-execution-filesystem.json"
+        JEVYR_SUBJECT_FILESYSTEM="$RUNNER_TEMP/jevyr-subject-filesystem.json"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_EXECUTION_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify "$JEVYR_SUBJECT_ROOT" "$JEVYR_SUBJECT_FILESYSTEM"
+        node "$JEVYR_TREE_GUARD" verify-subtree "$JEVYR_ACTION_ROOT" "$JEVYR_RUNTIME_FILESYSTEM" .jevyr
+        git_subject() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_SUBJECT_ROOT" "$@"
+        }
+        JEVYR_SUBJECT_STATUS=$(git_subject status --porcelain=v2 --untracked-files=all --ignore-submodules=none)
+        test -z "$JEVYR_SUBJECT_STATUS"
+        git_subject ls-files --others --ignored --exclude-standard -z > "$RUNNER_TEMP/jevyr-source-ignored-final"
+        test ! -s "$RUNNER_TEMP/jevyr-source-ignored-final"
+        {
+          git_subject rev-parse --verify 'HEAD^{commit}'
+          git_subject rev-parse --verify 'HEAD^{tree}'
+          git_subject ls-files --stage -z
+          git_subject diff --no-ext-diff --no-textconv --binary HEAD --
+          git_subject ls-files --others --exclude-standard -z
+        } | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-source-after.sha256"
+        cmp "$RUNNER_TEMP/jevyr-source-before.sha256" "$RUNNER_TEMP/jevyr-source-after.sha256"
+        JEVYR_RUNTIME_SHA=$(cat "$RUNNER_TEMP/jevyr-runtime-sha")
+        git_runtime() {
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP" LANG=C.UTF-8 \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 \
+            GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+            git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            -C "$JEVYR_ACTION_ROOT" "$@"
+        }
+        JEVYR_OBSERVED_RUNTIME_SHA=$(git_runtime rev-parse --verify 'HEAD^{commit}')
+        test "$JEVYR_RUNTIME_SHA" = "$JEVYR_OBSERVED_RUNTIME_SHA"
+        JEVYR_RUNTIME_STATUS=$(git_runtime status --porcelain=v2 --untracked-files=no --ignore-submodules=none)
+        test -z "$JEVYR_RUNTIME_STATUS"
+        JEVYR_RUNTIME_CONTROL_STATUS=$(git_runtime status --porcelain=v2 --untracked-files=all --ignore-submodules=none -- .jevyr)
+        if [[ -n "$JEVYR_RUNTIME_CONTROL_STATUS" ]]; then
+          echo "The trusted .jevyr authority namespace changed before shutdown." >&2
+          exit 1
+        fi
+        JEVYR_RUNTIME_IGNORED_CONTROLS=$(git_runtime ls-files --others --ignored --exclude-standard -- .jevyr)
+        if [[ -n "$JEVYR_RUNTIME_IGNORED_CONTROLS" ]]; then
+          echo "The trusted .jevyr authority namespace contains ignored material before shutdown." >&2
+          exit 1
+        fi
+        if [[ -e "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+          if [[ ! -d "$JEVYR_ACTION_ROOT/.jevyr" || -L "$JEVYR_ACTION_ROOT/.jevyr" ]]; then
+            echo "The trusted .jevyr authority root is not a real directory before shutdown." >&2
+            exit 1
+          fi
+          JEVYR_RUNTIME_CONTROL_LINK=$(find "$JEVYR_ACTION_ROOT/.jevyr" -type l -print -quit)
+          if [[ -n "$JEVYR_RUNTIME_CONTROL_LINK" ]]; then
+            echo "The trusted .jevyr authority namespace contains a symbolic link before shutdown." >&2
+            exit 1
+          fi
+        fi
+        {
+          git_runtime rev-parse --verify 'HEAD^{commit}'
+          git_runtime rev-parse --verify 'HEAD^{tree}'
+          git_runtime ls-files --stage -z
+          git_runtime diff --no-ext-diff --no-textconv --binary HEAD --
+        } | sha256sum | cut -d' ' -f1 > "$RUNNER_TEMP/jevyr-runtime-final.sha256"
+        cmp "$RUNNER_TEMP/jevyr-runtime-before.sha256" "$RUNNER_TEMP/jevyr-runtime-final.sha256"
+        JEVYR_IGNORE_IDENTITY=$(cat "$RUNNER_TEMP/jevyr-ignore-policy.sha256")
+        if [[ "$JEVYR_IGNORE_IDENTITY" == "absent" ]]; then
+          if [[ -e "$JEVYR_ACTION_ROOT/.jevyrignore" || -L "$JEVYR_ACTION_ROOT/.jevyrignore" ]]; then
+            echo "The trusted runtime ignore policy changed before shutdown." >&2
+            exit 1
+          fi
+          if [[ -e "$JEVYR_SUBJECT_ROOT/.jevyrignore" || -L "$JEVYR_SUBJECT_ROOT/.jevyrignore" ]]; then
+            echo "The subject's ignore policy differs from the trusted base before shutdown." >&2
+            exit 1
+          fi
+        else
+          if [[ ! -f "$JEVYR_ACTION_ROOT/.jevyrignore" || -L "$JEVYR_ACTION_ROOT/.jevyrignore" ]]; then
+            echo "The trusted runtime ignore policy is invalid before shutdown." >&2
+            exit 1
+          fi
+          if [[ ! -f "$JEVYR_SUBJECT_ROOT/.jevyrignore" || -L "$JEVYR_SUBJECT_ROOT/.jevyrignore" ]]; then
+            echo "The subject's ignore policy is invalid before shutdown." >&2
+            exit 1
+          fi
+          JEVYR_OBSERVED_IGNORE_IDENTITY=$(sha256sum "$JEVYR_ACTION_ROOT/.jevyrignore" | cut -d' ' -f1)
+          test "$JEVYR_IGNORE_IDENTITY" = "$JEVYR_OBSERVED_IGNORE_IDENTITY"
+          cmp -s -- "$JEVYR_ACTION_ROOT/.jevyrignore" "$JEVYR_SUBJECT_ROOT/.jevyrignore"
+        fi
+
+    - name: Publish verified advisory summary
+      if: success()
+      shell: bash
+      env:
+        JEVYR_PUBLIC_RECORD: ${{ steps.run.outputs.record-path }}
+        JEVYR_PUBLIC_TERMINAL: ${{ steps.run.outputs.terminal-path }}
+        JEVYR_CASE_ID: ${{ steps.run.outputs.case-id }}
+        JEVYR_SUBJECT_SHA: ${{ steps.run.outputs.source-sha }}
+        JEVYR_RUNTIME_SHA: ${{ steps.run.outputs.runtime-sha }}
+        JEVYR_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        JEVYR_VERIFIED_KEY_ID: ${{ steps.run.outputs.key-id }}
+      run: |
+        set -euo pipefail
+        umask 077
+        env -i PATH="$PATH" HOME="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" LANG=C.UTF-8 \
+          JEVYR_PUBLIC_RECORD="$JEVYR_PUBLIC_RECORD" JEVYR_PUBLIC_TERMINAL="$JEVYR_PUBLIC_TERMINAL" \
+          JEVYR_CASE_ID="$JEVYR_CASE_ID" JEVYR_SUBJECT_SHA="$JEVYR_SUBJECT_SHA" \
+          JEVYR_RUNTIME_SHA="$JEVYR_RUNTIME_SHA" JEVYR_WORKFLOW_SHA="$JEVYR_WORKFLOW_SHA" \
+          JEVYR_VERIFIED_KEY_ID="$JEVYR_VERIFIED_KEY_ID" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+          node -e '
+          const fs=require("fs");
+          const r=JSON.parse(fs.readFileSync(process.env.JEVYR_PUBLIC_RECORD,"utf8"));
+          const t=JSON.parse(fs.readFileSync(process.env.JEVYR_PUBLIC_TERMINAL,"utf8"));
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `## Jevyr advisory Record\n\nCase: \`${process.env.JEVYR_CASE_ID}\`  \nWorkflow: \`${process.env.JEVYR_WORKFLOW_SHA}\`  \nRuntime: \`${process.env.JEVYR_RUNTIME_SHA}\`  \nSubject: \`${process.env.JEVYR_SUBJECT_SHA}\`  \nDSSE key: \`${process.env.JEVYR_VERIFIED_KEY_ID}\`  \nIntegrity: **${r.verdict.integrity}**  \nCreation: **${r.verdict.creation}**  \nEmbodiment: **${r.verdict.embodiment}**  \nJudgment: **${r.verdict.judgment}**  \nCrystallization prefix: \`${r.eventHeadDigest}\`  \nSigned terminal head: \`${t.eventHeadDigest}\` (sequence ${t.lastSequence})\n\nThis is advisory evidence, not merge authority. Pin the DSSE key ID or the authenticated GitHub artifact digest before offline verification.\n`);
+        '

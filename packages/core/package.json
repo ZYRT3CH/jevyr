@@ -1,0 +1,33 @@
+{
+  "name": "@jevyr/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic sealing, evidence, judgment, replay, and signing kernel for Jevyr.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "policy"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@jevyr/protocol": "workspace:*",
+    "@open-policy-agent/opa-wasm": "1.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

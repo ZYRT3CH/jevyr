@@ -1,0 +1,23 @@
+{
+  "protocol": "jevyr.live-model-qualification-config/1",
+  "providers": [
+    {
+      "id": "mind.qualification.qwen",
+      "model": "qwen3-coder:30b-32k",
+      "modelFamily": "qwen3-coder",
+      "baseUrl": "http://127.0.0.1:11434/v1/",
+      "modelDigest": "sha256:8a8cf98b3304ff023d76744c7fd59b55e70f48e0497c39feb4229e3b7425485e",
+      "investigationTransport": "native"
+    }
+  ],
+  "seeds": [
+    "4115ba6999eb747c0154ac17e99a6e24d81f5b0b84ee3b6c699a6ec7dafd88b3"
+  ],
+  "repeats": 1,
+  "dockerImage": "node:24-alpine",
+  "corpus": {
+    "kind": "generated",
+    "seed": "0c89405f8476452f4bf2dfcabb91002b233ec0269d63dc0917a23e84d8274bc6",
+    "taskPairs": 2
+  }
+}

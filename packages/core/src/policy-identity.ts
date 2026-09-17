@@ -1,0 +1,3 @@
+export const REGO_POLICY_SOURCE_DIGEST = "sha256:62c81ee15f7f4b26d4ab3f1b786ffcb11a38f9560eb8c2e429a38f86154756cc";
+export const REGO_POLICY_WASM_DIGEST = "sha256:d5db6164f700a00dedd3d7626b149947a8c16f237eba23fb197337f2f0ab386f";
+export const REGO_POLICY_COMPILER = "Open Policy Agent 1.8.0";
