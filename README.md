@@ -5,10 +5,9 @@
 > What if a model could propose anything, but nothing could be called true until
 > it survived a test?
 
-Jevyr is a local-first AI judge for claims, plans, code, and decisions. It was
-built by Sondre Formo Lindheim, an independent developer exploring what AI
-systems can do when they are asked to test ideas instead of only talking about
-them.
+Jevyr is a local-first AI judge for claims, plans, code, and decisions. It is an
+independent experiment exploring what AI systems can do when they are asked to
+test ideas instead of only talking about them.
 
 The project started in early 2026. I am open-sourcing it now because it is an
 experiment I want to share, inspect, and develop in public. It is my first
@@ -585,3 +584,7 @@ See the [architecture](docs/architecture.md), [protocol](docs/protocol.md),
 [operations guide](docs/operations.md), [threat model](docs/threat-model.md), and
 [release-readiness notes](docs/release-readiness.md) for deeper technical details
 and the measured limits of the current build.
+
+## Contact
+
+For questions about this repository, email [sondre@norwAI.as](mailto:sondre@norwAI.as).
