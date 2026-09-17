@@ -645,6 +645,54 @@ const SPECIMEN_EVENTS: Omit<JevyrPublicEvent, 'sequence'>[] = [
   },
 ];
 
+const REALISTIC_SPECIMEN_IMPULSE =
+  'Create a dependency-free parser that rejects malformed input and reports the error position.';
+
+const REALISTIC_SPECIMEN_SUMMARIES = [
+  'The parser task entered the Case.',
+  'The input fixtures became immutable material.',
+  'The parser must accept valid input and reject malformed input with its error position.',
+  'Ingress closed; the parser contract cannot be changed.',
+  'Available model and test capabilities were counted.',
+  'Three parser approaches entered the search.',
+  'A permissive parser accepted malformed input.',
+  'A regex-only parser failed on nested structure.',
+  'A child parser inherited strict error handling.',
+  'The search kept strictness and compatibility in view.',
+  'The first parser candidate produced a runnable artifact.',
+  'The child parser produced an isolated artifact.',
+  'A malformed fixture exposed a silent acceptance.',
+  'The first parser candidate entered the same fixture suite.',
+  'The candidate returned the wrong error position.',
+  'The first candidate failed the parser fixture suite.',
+  'The archive retained the failure as a scar.',
+  'The child parser entered the same fixture suite.',
+  'A model reported confidence; it remained non-authoritative.',
+  'The Forge began the parser fixture suite without accepting the model vote.',
+  'The parser returned a measurable result on the first fixture set.',
+  'The child passed comparison; the contract remained unchanged.',
+  'The measured archive retained the child parser.',
+  'Only now did the archive select the child parser.',
+  'Selected-candidate evidence supported the parser requirement.',
+  'The parser result was checked against the sealed requirement.',
+  'The candidate was reviewed for unresolved obligations.',
+  'The evidence graph closed with one supported path.',
+  'The deterministic judge compared requirements with evidence.',
+  'No hidden continuation or outside instruction entered the Case.',
+  'The illustrative parser Case closed without claiming real execution.',
+] as const;
+
+const REALISTIC_SPECIMEN_EVENTS: Omit<JevyrPublicEvent, 'sequence'>[] =
+  SPECIMEN_EVENTS.map((event, index) => {
+    const summary = REALISTIC_SPECIMEN_SUMMARIES[index] ?? event.summary;
+    const payload: Record<string, unknown> = {
+      ...(event.payload as Record<string, unknown>),
+      summary,
+    };
+    if (index === 2) payload.statement = summary;
+    return { ...event, summary, payload } as Omit<JevyrPublicEvent, 'sequence'>;
+  });
+
 function normalizedStage(value?: string) {
   return value?.toUpperCase().replaceAll('-', '_').replaceAll('.', '_') ?? '';
 }
@@ -910,37 +958,40 @@ export default function JevyrChamber() {
     });
   }, []);
 
-  const beginSpecimen = useCallback(() => {
-    if (specimenTimer.current) clearInterval(specimenTimer.current);
-    castClosedRef.current = true;
-    setStreamMode('specimen');
-    setNotice('Anatomy specimen · the daemon is absent');
-    setReceiptDigest(undefined);
-    setAuthenticity('specimen');
-    setVerificationKeyId(undefined);
-    setEvents([]);
-    terminalRef.current = false;
-    authenticatedCaseDigestRef.current = undefined;
-    closureAuthenticationStartedRef.current = false;
-    sequenceRef.current = 0;
-    headDigestRef.current = null;
-    caseDigestRef.current = undefined;
-    runDigestRef.current = undefined;
-    digestBySequenceRef.current.clear();
-    let cursor = 0;
-    specimenTimer.current = setInterval(() => {
-      const next = SPECIMEN_EVENTS[cursor];
-      if (!next) {
-        if (specimenTimer.current) clearInterval(specimenTimer.current);
-        specimenTimer.current = null;
-        setStreamMode('ended');
-        setNotice('Specimen complete · no execution was claimed');
-        return;
-      }
-      appendEvents([{ ...next, sequence: cursor + 1 }]);
-      cursor += 1;
-    }, 1500);
-  }, [appendEvents]);
+  const beginSpecimen = useCallback(
+    (specimenEvents: Omit<JevyrPublicEvent, 'sequence'>[] = SPECIMEN_EVENTS) => {
+      if (specimenTimer.current) clearInterval(specimenTimer.current);
+      castClosedRef.current = true;
+      setStreamMode('specimen');
+      setNotice('Anatomy specimen · the daemon is absent');
+      setReceiptDigest(undefined);
+      setAuthenticity('specimen');
+      setVerificationKeyId(undefined);
+      setEvents([]);
+      terminalRef.current = false;
+      authenticatedCaseDigestRef.current = undefined;
+      closureAuthenticationStartedRef.current = false;
+      sequenceRef.current = 0;
+      headDigestRef.current = null;
+      caseDigestRef.current = undefined;
+      runDigestRef.current = undefined;
+      digestBySequenceRef.current.clear();
+      let cursor = 0;
+      specimenTimer.current = setInterval(() => {
+        const next = specimenEvents[cursor];
+        if (!next) {
+          if (specimenTimer.current) clearInterval(specimenTimer.current);
+          specimenTimer.current = null;
+          setStreamMode('ended');
+          setNotice('Specimen complete · no execution was claimed');
+          return;
+        }
+        appendEvents([{ ...next, sequence: cursor + 1 }]);
+        cursor += 1;
+      }, 1500);
+    },
+    [appendEvents],
+  );
 
   const castImpulse = useCallback(
     async (text: string, options?: CastOptions) => {
@@ -997,11 +1048,14 @@ export default function JevyrChamber() {
     queueMicrotask(() => {
       if (disposed) return;
       if (parameters.get('specimen') === '1') {
+        const realistic = parameters.get('scenario') === 'parser';
         setImpulse(
-          'Design a self-validating machine that refuses inherited answers.',
+          realistic
+            ? REALISTIC_SPECIMEN_IMPULSE
+            : 'Design a self-validating machine that refuses inherited answers.',
         );
         setSealed(true);
-        beginSpecimen();
+        beginSpecimen(realistic ? REALISTIC_SPECIMEN_EVENTS : SPECIMEN_EVENTS);
       } else if (requestedCase) {
         castClosedRef.current = true;
         setSealed(true);

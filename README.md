@@ -6,8 +6,14 @@
 > it survived a test?
 
 Jevyr is a local-first AI judge for claims, plans, code, and decisions. It was
-built by Sondre, an independent developer exploring what AI systems can do when
-they are asked to test ideas instead of only talking about them.
+built by Sondre Formo Lindheim, an independent developer exploring what AI
+systems can do when they are asked to test ideas instead of only talking about
+them.
+
+The project started in early 2026. I am open-sourcing it now because it is an
+experiment I want to share, inspect, and develop in public. It is my first
+open-source project, and the point is to give other people something to fork,
+play with, question, and turn into their own tools.
 
 **Project status: experimental and unfinished.** This repository is shared for
 inspection, learning, and further development. It is ambitious, complex, and not
@@ -38,6 +44,46 @@ The central idea is simple:
 Jevyr is not a chatbot, and it is not an unrestricted autonomous agent. It is a
 judgment system.
 
+## Quick start
+
+If you are a human, fork the repository, install it, and start the Chamber:
+
+~~~bash
+corepack enable
+pnpm install
+pnpm build
+pnpm jevyr init .
+pnpm jevyr doctor
+pnpm jevyr up --local-model YOUR_INSTALLED_OLLAMA_MODEL
+~~~
+
+Then open http://localhost:3001. If you are an AI agent, connect to Jevyr through
+MCP and submit a Case; the short version is `jevyr mcp serve`. The full MCP
+configuration is below.
+
+Want to look around before running anything real? Open
+`http://localhost:3001/?specimen=1` for an illustrative Case. The specimen is
+not execution, proof, or a signed result.
+
+## What you can explore
+
+Jevyr is meant to be forked and played with. You can use it to:
+
+- give a human a visible, replayable way to compare ideas and inspect evidence;
+- let an AI agent test its own proposed code, plans, tool actions, or memories
+  before another system relies on them;
+- build custom assays for software, research, or model evaluations;
+- connect a simulator or robot adapter and test plans before physical execution;
+- study disagreement, candidate evolution, uncertainty, and when a system should
+  say “unproven”; and
+- ask open-ended questions such as “What is the most beautiful thing?” and see
+  how different models interpret the question, as a subjective exploration
+  rather than an objective measurement.
+
+The intended entry point for agents is MCP. The Chamber is an optional human
+window into the Case: open it when you want to watch, read, or inspect what was
+recorded, but you do not need to operate the interface as a chat application.
+
 ## Why this matters
 
 A normal AI answer might say:
@@ -53,13 +99,27 @@ Jevyr tries to produce something closer to:
 That separation matters because a model's confidence is not the same thing as
 evidence.
 
-Jevyr is not a truth machine. It can only judge claims that have a defined way to
-be tested.
+Jevyr is not a truth machine. It can only judge a claim as supported when there
+is a defined way to test it. Open-ended prompts can still be useful: for example,
+asking “What is the most beautiful thing?” can produce model perspectives,
+explicit criteria, comparisons, and disagreement. That is an exploration of
+interpretation—not proof that one answer is universally beautiful.
 
 ## A quick look
 
 This is a rough recording of the Chamber interface. It is a visual introduction,
 not proof that a live Case ran.
+
+![The Jevyr Chamber](docs/screenshots/chamber-anatomy.png)
+
+The self-validating-machine prompt is the conceptual specimen. This second
+illustration uses a more concrete software task: build a dependency-free parser
+that rejects malformed input and reports where the error occurred. It is still a
+simulation, but it shows the kind of bounded, testable work Jevyr is currently
+best suited for. Run it locally with
+`http://localhost:3001/?specimen=1&scenario=parser`.
+
+![A concrete parser Case in the Jevyr Chamber](docs/screenshots/chamber-parser-specimen.png)
 
 [![Watch the Jevyr overview](docs/screenshots/jevyr-overview.png)](docs/media/jevyr-overview.mp4)
 
@@ -271,12 +331,15 @@ The Chamber is intentionally not a normal chat interface. Couch is the readable
 surface for humans. Inspect is a forensic surface for reviewers and MCP clients
 that need to follow a Case into its evidence. Its density is deliberate: it is
 showing provenance and state, not trying to make every internal panel feel simple.
+The CLI can open the Chamber when Jevyr starts; MCP itself is the agent transport
+and does not need to steer a human browser.
 
 ## See the Chamber
 
-These screenshots come from the built-in anatomy specimen and the live Airlock
+These screenshots come from the built-in anatomy specimen and the Airlock
 interface. The specimen is intentionally illustrative: it is not a signed Case
-and it is not execution proof.
+and it is not execution proof. The Airlock capture shows the interface reading
+local capacity, not a failed Case.
 
 The transparent [Jevyr mark](assets/jevyr-mark.svg) is the circular
 experimental-world symbol used by the Chamber.
