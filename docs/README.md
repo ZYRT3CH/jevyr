@@ -14,5 +14,6 @@ Jevyr accepts one sealed impulse, creates and challenges possible responses, emb
 - [Visual constitution](visual-constitution.md) — what a human must learn from the Chamber and what visual grammar is rejected
 - [GitHub advisory mode](github-advisory.md) — exact-SHA, read-only repository evaluation
 - [Research intake](research-intake.md) — how external mechanisms become experiments rather than borrowed authority
+- [Launch thread](social/x-thread.md) — the readable eight-post introduction to Jevyr
 
 The normative invariant is short: **the models may create claims; only the deterministic kernel may compile a verdict.**
