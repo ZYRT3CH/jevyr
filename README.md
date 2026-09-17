@@ -1,8 +1,26 @@
 # Jevyr
 
-## An AI judge for claims, plans, code, and decisions
+## What if an AI answer had to earn trust?
 
-Jevyr is a local-first AI system for situations where a chat answer is not enough.
+> What if a model could propose anything, but nothing could be called true until
+> it survived a test?
+
+Jevyr is a local-first AI judge for claims, plans, code, and decisions. It was
+built by Sondre, an independent developer exploring what AI systems can do when
+they are asked to test ideas instead of only talking about them.
+
+**Project status: experimental and unfinished.** This repository is shared for
+inspection, learning, and further development. It is ambitious, complex, and not
+something to install casually and trust with important work.
+
+**Repository footprint:** the tracked public files in this snapshot are about
+37 MB, mostly the overview video. A local development folder can grow to several
+GB after installing dependencies, Docker images, caches, and generated Case
+artifacts. Those files are intentionally ignored and are not part of the public
+source repository.
+
+Jevyr includes a working local MCP server, CLI, Chamber interface, TypeScript and
+Python SDKs, controlled execution boundaries, and replayable evidence records.
 
 Instead of asking one model for an answer and accepting whatever it says, Jevyr:
 
@@ -37,6 +55,15 @@ evidence.
 
 Jevyr is not a truth machine. It can only judge claims that have a defined way to
 be tested.
+
+## A quick look
+
+This is a rough recording of the Chamber interface. It is a visual introduction,
+not proof that a live Case ran.
+
+[![Watch the Jevyr overview](docs/screenshots/jevyr-overview.png)](docs/media/jevyr-overview.mp4)
+
+[Watch the overview video](docs/media/jevyr-overview.mp4)
 
 ## The basic flow
 
@@ -251,7 +278,8 @@ These screenshots come from the built-in anatomy specimen and the live Airlock
 interface. The specimen is intentionally illustrative: it is not a signed Case
 and it is not execution proof.
 
-The transparent [Jevyr mark](assets/jevyr-mark.svg) is the circular experimental-world symbol used by the Chamber and the Remotion demo.
+The transparent [Jevyr mark](assets/jevyr-mark.svg) is the circular
+experimental-world symbol used by the Chamber.
 
 ![Jevyr Airlock](docs/screenshots/airlock.png)
 
@@ -259,31 +287,14 @@ The transparent [Jevyr mark](assets/jevyr-mark.svg) is the circular experimental
 
 ![Jevyr Inspect view](docs/screenshots/chamber-inspect.png)
 
-## Watch the idea move
-
-The Remotion project includes a slower five-minute explainer, an action-led launch
-cut, and a plain-language one-minute cut built around “What if?”. All are rendered
-at 1920×1080 and 30 fps. Run them from [demo/remotion](demo/remotion/README.md).
-
-The videos are visual explainers, not proof that a live Case ran. They are silent by
-design so a soundtrack or voiceover can be chosen for the audience.
-
-- [Action-led launch cut](demo/remotion/public/jevyr-launch-short.mp4)
-- [Plain-language “What if?” cut](demo/remotion/public/jevyr-what-if-short.mp4)
-
 ![Jevyr Anatomy view](docs/screenshots/chamber-anatomy.png)
-
-![A frame from the Jevyr Remotion explainer](docs/screenshots/remotion-demo.png)
-
-![A frame from the Jevyr “What if?” launch film](docs/screenshots/remotion-what-if.png)
-
-The optional [Remotion explainer](demo/remotion/README.md) turns the same ideas
-into a five-minute visual demo. It is a presentation aid, not a runtime
-component.
 
 ## MCP
 
-MCP lets another AI application use Jevyr as a judgment service.
+Jevyr has a working MCP interface so another AI application can use it as a
+judgment service. MCP is the transport layer; Jevyr remains responsible for
+sealing the Case, controlling the investigation, and returning the evidence-bound
+result.
 
 The normal MCP tools are:
 
@@ -434,11 +445,19 @@ If your system raises a warning, stop and investigate it through your normal
 security process. Review the source, verify the checkout, and run Jevyr only in an
 environment you understand.
 
-Use Jevyr at your own risk. You are responsible for reviewing its configuration,
-the code you run, the models and providers you connect, and any decision or action
-you take based on its output. The maintainers are not responsible for damage,
-data loss, security incidents, or other harm resulting from use or misuse of this
-software.
+### Use at your own risk
+
+Jevyr is provided for inspection, learning, and further development, without any
+promise that it will be safe, correct, secure, available, or fit for a particular
+purpose. You are responsible for reviewing its configuration, the code you run,
+the models and providers you connect, and every decision or action you take based
+on its output.
+
+To the maximum extent permitted by applicable law, the author and maintainers are
+not responsible for damage, data loss, security incidents, service interruption,
+incorrect decisions, or any other harm resulting from the use, misuse, or inability
+to use Jevyr. This notice is not a substitute for a proper open-source license or
+legal review in the jurisdictions where you use it.
 
 ## Repository structure
 
@@ -458,9 +477,6 @@ packages/
 
 sdk/
   python/       Python client
-
-demo/
-  remotion/     Optional programmatic explainer video
 
 docs/           Architecture, protocol, operations, and threat model
 benchmarks/     Reproducible benchmark and release-gate material

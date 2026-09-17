@@ -24,10 +24,9 @@ __pycache__/
 Thumbs.db
 
 # Optional demos and local renders
+demo/remotion/
 demo/**/node_modules/
 demo/**/out/
 demo/**/public/*.mp4
 demo/**/public/*.webm
-!demo/remotion/public/jevyr-launch-short.mp4
-!demo/remotion/public/jevyr-what-if-short.mp4
 docs/screenshots/dev*/
